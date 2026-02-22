@@ -291,7 +291,7 @@ async function stepWriteConfig(
   header("Step 3: Writing Config");
 
   const mcpCommand = env.uvxPath ?? "uvx";
-  const mcpArgs = ["workspace-mcp", "--tool-tier", "core"];
+  const mcpArgs = ["coogle-mcp", "--tool-tier", "core"];
 
   // Build the config object
   let configObj: Record<string, unknown>;

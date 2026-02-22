@@ -8,13 +8,13 @@ Google Workspace MCP multiplexer for Claude Code. One persistent daemon holds th
 
 Coogle is the MCP server that gives Claude access to Gmail, Calendar, Drive, Docs, Sheets, and the rest of Google Workspace — across multiple sessions simultaneously.
 
-The naive setup — pointing Claude directly at `uvx workspace-mcp` — works fine for one session. The moment you open a second Claude Code window, both sessions try to own the same Google OAuth credentials. They fight, one wins, the other gets errors or stale tokens.
+The naive setup — running Google Workspace MCP directly — works fine for one session. The moment you open a second Claude Code window, both sessions try to own the same Google OAuth credentials. They fight, one wins, the other gets errors or stale tokens.
 
 Coogle solves this with a daemon pattern: one persistent process holds the Google Workspace connection and serializes all calls through a queue. Every Claude Code session runs a thin MCP shim that forwards tool calls to the daemon over a Unix Domain Socket. From Claude's perspective nothing changes — 142 tools are available. Under the hood, every call goes through a single, stable connection.
 
 ```
 Claude Code (session 1)
-Claude Code (session 2)  ──>  coogle daemon  ──>  workspace-mcp  ──>  Google APIs
+Claude Code (session 2)  ──>  coogle daemon  ──>  coogle-mcp  ──>  Google APIs
 Claude Code (session 3)
 ```
 
@@ -69,7 +69,7 @@ Coogle has two runtime components:
 
 **Daemon** (`src/daemon.ts`) — a long-running process that spawns and owns a single `coogle-mcp` child via stdio. It listens on a Unix Domain Socket (`/tmp/coogle.sock`) and serializes all incoming tool calls through a queue. If the child crashes, it auto-respawns with a 3-second cooldown.
 
-**MCP shim** (`src/mcp-server.ts`) — a thin proxy started by Claude Code in place of `uvx workspace-mcp`. On startup it connects to the daemon socket, dynamically discovers all available tools, registers them with the MCP SDK, and forwards every `tools/call` request to the daemon over IPC.
+**MCP shim** (`src/mcp-server.ts`) — a thin proxy started by Claude Code. On startup it connects to the daemon socket, dynamically discovers all available tools, registers them with the MCP SDK, and forwards every `tools/call` request to the daemon over IPC.
 
 ```
 Claude Code (MCP stdio)
@@ -84,7 +84,7 @@ Claude Code (MCP stdio)
        |
        |  MCP stdio
        |
-  workspace-mcp (uvx workspace-mcp --tool-tier core)
+  coogle-mcp backend
        |
        |  HTTPS
        |
@@ -129,7 +129,7 @@ Config lives at `~/.config/coogle/config.json`. It is created automatically by `
   "socketPath": "/tmp/coogle.sock",
   "mcp": {
     "command": "uvx",
-    "args": ["workspace-mcp", "--tool-tier", "core"]
+    "args": ["coogle-mcp", "--tool-tier", "core"]
   },
   "credentials": {
     "source": "claude-json",
@@ -155,7 +155,7 @@ Config lives at `~/.config/coogle/config.json`. It is created automatically by `
 |-------|---------|-------------|
 | `socketPath` | `/tmp/coogle.sock` | Unix Domain Socket path for IPC |
 | `mcp.command` | `uvx` | Command to run coogle-mcp |
-| `mcp.args` | `["workspace-mcp", "--tool-tier", "core"]` | Arguments for coogle-mcp |
+| `mcp.args` | `["coogle-mcp", "--tool-tier", "core"]` | Arguments for coogle-mcp |
 | `credentials.source` | `claude-json` | Where to load Google OAuth credentials from |
 | `credentials.claudeJsonPath` | `~/.claude.json` | Path to Claude config (for `claude-json` source) |
 | `credentials.mcpServerName` | `workspace` | MCP server key to read credentials from |
@@ -281,7 +281,7 @@ node dist/index.js setup
 Or trigger a fresh Google OAuth flow via `coogle-mcp` directly:
 
 ```bash
-uvx workspace-mcp --tool-tier core
+coogle restart
 ```
 
 **Daemon keeps crashing**
@@ -290,15 +290,15 @@ Check `/tmp/coogle.log` for error messages. The daemon has a 3-second respawn co
 
 **Multiple Claude sessions getting stale results**
 
-This is the condition coogle was built to prevent. Verify all sessions are using the shim (not `uvx workspace-mcp` directly, which bypasses coogle):
+This is the condition coogle was built to prevent. Verify all sessions are using the coogle shim:
 
 ```bash
 node dist/index.js status
 ```
 
-Check that `~/.claude.json` shows `node .../coogle/dist/index.js mcp` as the workspace command, not `uvx workspace-mcp` (the direct connection that bypasses coogle).
+Check that `~/.claude.json` shows `node .../coogle/dist/index.js mcp` as the workspace command.
 
-**Rollback to direct uvx workspace-mcp**
+**Rollback to pre-coogle configuration**
 
 ```bash
 cp ~/.claude.json.backup ~/.claude.json

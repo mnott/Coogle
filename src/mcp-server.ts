@@ -1,7 +1,7 @@
 /**
  * mcp-server.ts — The MCP shim (thin proxy for Claude)
  *
- * This replaces `uvx workspace-mcp` in Claude's MCP config. It:
+ * This is the MCP shim that Claude Code runs. It:
  *   1. Connects to the daemon via IPC on startup
  *   2. Discovers all available tools from the daemon (dynamic — no hardcoding)
  *   3. Registers tools/list and tools/call handlers with the low-level Server

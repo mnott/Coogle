@@ -70,8 +70,8 @@ Supporting modules:
                            │ MCP stdio (StdioClientTransport)
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ workspace-mcp child process                                     │
-│   command: uvx workspace-mcp --tool-tier core                   │
+│ coogle-mcp child process                                        │
+│   command: uvx coogle-mcp --tool-tier core                      │
 │   env: GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET       │
 │        (injected from credentials source at startup)            │
 └──────────────────────────┬──────────────────────────────────────┘
@@ -267,7 +267,7 @@ loadCredentials()
           └── return { GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET }
 ```
 
-The `claude-json` source reads credentials from the same `~/.claude.json` where they were originally configured for the direct `uvx workspace-mcp` setup. This means existing users can switch to Coogle without changing their credential storage.
+The `claude-json` source reads credentials from `~/.claude.json` where they were originally configured. This means existing users can switch to Coogle without changing their credential storage.
 
 ---
 
@@ -278,7 +278,7 @@ Config is loaded from `~/.config/coogle/config.json` using a deep-merge strategy
 ```typescript
 const DEFAULTS: CoogleConfig = {
   socketPath: "/tmp/coogle.sock",
-  mcp: { command: "uvx", args: ["workspace-mcp", "--tool-tier", "core"] },  // actual uvx command args
+  mcp: { command: "uvx", args: ["coogle-mcp", "--tool-tier", "core"] },
   credentials: { source: "claude-json", claudeJsonPath: "~/.claude.json", mcpServerName: "workspace" },
   callTimeoutMs: 120_000,
   logLevel: "info",

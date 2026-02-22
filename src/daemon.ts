@@ -1,7 +1,7 @@
 /**
  * daemon.ts — The persistent coogle daemon
  *
- * Spawns a single `uvx workspace-mcp --tool-tier core` child process and
+ * Spawns a single coogle-mcp child process and
  * multiplexes IPC requests from multiple MCP shim clients through it.
  *
  * Architecture:
