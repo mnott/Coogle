@@ -1,12 +1,12 @@
 /**
- * setup.ts — Interactive first-time setup for workspace-daemon
+ * setup.ts — Interactive first-time setup for coogle
  *
  * Run with: node dist/index.js setup
  *
  * Walks the user through:
  *   1. Environment detection (node, uvx, OS)
  *   2. Credential detection (from ~/.claude.json or prompted)
- *   3. Writing config to ~/.config/workspace-daemon/config.json
+ *   3. Writing config to ~/.config/coogle/config.json
  *   4. Build check (dist/index.js exists)
  *   5. Test daemon startup (spawn, connect via IPC, verify tools)
  *   6. Install launchd service (macOS only, optional)
@@ -28,7 +28,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 
-import { WorkspaceDaemonClient } from "./ipc-client.js";
+import { CoogleClient } from "./ipc-client.js";
 import { CONFIG_DIR, CONFIG_FILE, expandHome } from "./config.js";
 import { resolveMcpCommand } from "./daemon.js";
 
@@ -399,7 +399,7 @@ async function stepTestDaemon(
     }
   }
 
-  info("Spawning workspace-daemon subprocess...");
+  info("Spawning coogle daemon subprocess...");
 
   // Spawn daemon as a child process (detached from stdin so it doesn't compete)
   const child = spawn(process.execPath, [indexJsPath, "serve"], {
@@ -463,7 +463,7 @@ async function stepTestDaemon(
   ok(`IPC socket ready: ${cyan(socketPath)}`);
 
   // Connect via IPC client and verify
-  const client = new WorkspaceDaemonClient(socketPath);
+  const client = new CoogleClient(socketPath);
 
   let toolCount = 0;
   try {
@@ -535,7 +535,7 @@ async function stepInstallLaunchd(
     homedir(),
     "Library",
     "LaunchAgents",
-    "com.pai.workspace-daemon.plist"
+    "com.pai.coogle.plist"
   );
 
   const alreadyInstalled = existsSync(plistPath);
@@ -604,7 +604,7 @@ async function stepInstallLaunchd(
   if (running) {
     // Verify via IPC
     try {
-      const client = new WorkspaceDaemonClient(socketPath);
+      const client = new CoogleClient(socketPath);
       const status = await client.status();
       const s = status as { connected?: boolean; childRunning?: boolean; uptime?: number };
       ok(`Daemon running (uptime: ${s.uptime ?? 0}s)`);
@@ -612,7 +612,7 @@ async function stepInstallLaunchd(
       warn("Socket exists but IPC status check failed — may still be starting");
     }
   } else {
-    warn("Daemon socket not detected yet — check logs at /tmp/workspace-daemon.log");
+    warn("Daemon socket not detected yet — check logs at /tmp/coogle.log");
   }
 
   return true;
@@ -669,7 +669,7 @@ async function stepUpdateClaudeConfig(indexJsPath: string): Promise<boolean> {
   process.stdout.write("\n");
 
   const doUpdate = await promptYesNo(
-    "Update ~/.claude.json to use workspace-daemon shim?",
+    "Update ~/.claude.json to use coogle shim?",
     true
   );
 
@@ -713,7 +713,7 @@ async function stepUpdateClaudeConfig(indexJsPath: string): Promise<boolean> {
     return false;
   }
 
-  // Update the server config to use the daemon shim
+  // Update the server config to use the coogle shim
   const newServersBlock = {
     ...(mcpServers ?? {}),
     [targetServerName]: {
@@ -727,7 +727,7 @@ async function stepUpdateClaudeConfig(indexJsPath: string): Promise<boolean> {
 
   try {
     writeFileSync(claudeJsonPath, JSON.stringify(parsed, null, 2) + "\n", "utf-8");
-    ok(`Updated ${cyan("~/.claude.json")} — server "${targetServerName}" now uses workspace-daemon shim`);
+    ok(`Updated ${cyan("~/.claude.json")} — server "${targetServerName}" now uses coogle shim`);
     warn("Restart Claude Code to apply the new MCP config");
   } catch (err) {
     throw new Error(`Failed to write ~/.claude.json: ${err}`);
@@ -758,7 +758,7 @@ async function stepDone(opts: {
     let pid = "";
     let uptime = "";
     try {
-      const client = new WorkspaceDaemonClient(socketPath);
+      const client = new CoogleClient(socketPath);
       const status = await client.status();
       const s = status as { uptime?: number };
       uptime = `${s.uptime ?? 0}s`;
@@ -786,7 +786,7 @@ async function stepDone(opts: {
   process.stdout.write(`    ${cyan(`node ${indexJsPath} status`)}    — Check daemon status\n`);
   process.stdout.write(`    ${cyan(`node ${indexJsPath} restart`)}   — Restart workspace-mcp child\n`);
 
-  const plistPath = join(homedir(), "Library", "LaunchAgents", "com.pai.workspace-daemon.plist");
+  const plistPath = join(homedir(), "Library", "LaunchAgents", "com.pai.coogle.plist");
   if (launchdInstalled) {
     process.stdout.write(
       `    ${cyan(`launchctl unload ${plistPath}`)} — Stop launchd service\n`
@@ -846,7 +846,7 @@ function generatePlist(indexJsPath: string, socketPath: string): string {
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.pai.workspace-daemon</string>
+  <string>com.pai.coogle</string>
   <key>ProgramArguments</key>
   <array>
     <string>${nodePath}</string>
@@ -856,9 +856,9 @@ function generatePlist(indexJsPath: string, socketPath: string): string {
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/tmp/workspace-daemon.log</string>
+  <string>/tmp/coogle.log</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/workspace-daemon.log</string>
+  <string>/tmp/coogle.log</string>
   <key>ThrottleInterval</key>
   <integer>3</integer>
   <key>EnvironmentVariables</key>
@@ -879,13 +879,13 @@ function generatePlist(indexJsPath: string, socketPath: string): string {
 
 export async function runSetup(): Promise<void> {
   process.stdout.write("\n");
-  process.stdout.write(bold("workspace-daemon setup") + "\n");
-  process.stdout.write("========================\n");
+  process.stdout.write(bold("coogle setup") + "\n");
+  process.stdout.write("=============\n");
   process.stdout.write(
     dim("Interactive first-time setup. Press Ctrl+C at any time to abort.\n")
   );
 
-  const socketPath = "/tmp/workspace-daemon.sock";
+  const socketPath = "/tmp/coogle.sock";
 
   try {
     // Step 1: Environment

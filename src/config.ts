@@ -1,7 +1,7 @@
 /**
- * config.ts — Configuration loader for workspace-daemon
+ * config.ts — Configuration loader for coogle
  *
- * Loads config from ~/.config/workspace-daemon/config.json (XDG convention).
+ * Loads config from ~/.config/coogle/config.json (XDG convention).
  * Deep-merges with defaults so partial configs work fine.
  * Expands ~ in path values at runtime.
  */
@@ -14,7 +14,7 @@ import { join } from "node:path";
 // Types
 // ---------------------------------------------------------------------------
 
-export interface WorkspaceDaemonConfig {
+export interface CoogleConfig {
   /** Unix Domain Socket path for IPC */
   socketPath: string;
 
@@ -44,8 +44,8 @@ export interface WorkspaceDaemonConfig {
 // Defaults
 // ---------------------------------------------------------------------------
 
-const DEFAULTS: WorkspaceDaemonConfig = {
-  socketPath: "/tmp/workspace-daemon.sock",
+const DEFAULTS: CoogleConfig = {
+  socketPath: "/tmp/coogle.sock",
   mcp: {
     command: "uvx",
     args: ["workspace-mcp", "--tool-tier", "core"],
@@ -61,7 +61,7 @@ const DEFAULTS: WorkspaceDaemonConfig = {
 
 // Template written to config.json on first `serve` run
 const CONFIG_TEMPLATE = `{
-  "socketPath": "/tmp/workspace-daemon.sock",
+  "socketPath": "/tmp/coogle.sock",
   "mcp": {
     "command": "uvx",
     "args": ["workspace-mcp", "--tool-tier", "core"]
@@ -88,7 +88,7 @@ export function expandHome(p: string): string {
   return p;
 }
 
-export const CONFIG_DIR = join(homedir(), ".config", "workspace-daemon");
+export const CONFIG_DIR = join(homedir(), ".config", "coogle");
 export const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 
 // ---------------------------------------------------------------------------
@@ -124,10 +124,10 @@ function deepMerge<T extends object>(target: T, source: Record<string, unknown>)
 // ---------------------------------------------------------------------------
 
 /**
- * Load configuration from ~/.config/workspace-daemon/config.json.
+ * Load configuration from ~/.config/coogle/config.json.
  * Returns defaults merged with any values found in the file.
  */
-export function loadConfig(): WorkspaceDaemonConfig {
+export function loadConfig(): CoogleConfig {
   if (!existsSync(CONFIG_FILE)) {
     return { ...DEFAULTS };
   }
@@ -137,7 +137,7 @@ export function loadConfig(): WorkspaceDaemonConfig {
     raw = readFileSync(CONFIG_FILE, "utf-8");
   } catch (err) {
     process.stderr.write(
-      `[workspace-daemon] Could not read config file at ${CONFIG_FILE}: ${err}\n`
+      `[coogle] Could not read config file at ${CONFIG_FILE}: ${err}\n`
     );
     return { ...DEFAULTS };
   }
@@ -147,7 +147,7 @@ export function loadConfig(): WorkspaceDaemonConfig {
     parsed = JSON.parse(raw) as Record<string, unknown>;
   } catch (err) {
     process.stderr.write(
-      `[workspace-daemon] Config file is not valid JSON: ${err}\n`
+      `[coogle] Config file is not valid JSON: ${err}\n`
     );
     return { ...DEFAULTS };
   }
@@ -156,14 +156,14 @@ export function loadConfig(): WorkspaceDaemonConfig {
 }
 
 /**
- * Ensure ~/.config/workspace-daemon/ exists and write a default config.json
+ * Ensure ~/.config/coogle/ exists and write a default config.json
  * template if none exists yet. Call this only from the `serve` command.
  */
 export function ensureConfigDir(): void {
   if (!existsSync(CONFIG_DIR)) {
     mkdirSync(CONFIG_DIR, { recursive: true });
     process.stderr.write(
-      `[workspace-daemon] Created config directory: ${CONFIG_DIR}\n`
+      `[coogle] Created config directory: ${CONFIG_DIR}\n`
     );
   }
 
@@ -171,11 +171,11 @@ export function ensureConfigDir(): void {
     try {
       writeFileSync(CONFIG_FILE, CONFIG_TEMPLATE, "utf-8");
       process.stderr.write(
-        `[workspace-daemon] Wrote default config to: ${CONFIG_FILE}\n`
+        `[coogle] Wrote default config to: ${CONFIG_FILE}\n`
       );
     } catch (err) {
       process.stderr.write(
-        `[workspace-daemon] Could not write default config: ${err}\n`
+        `[coogle] Could not write default config: ${err}\n`
       );
     }
   }

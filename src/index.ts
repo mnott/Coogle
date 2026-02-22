@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * index.ts — CLI entry point for workspace-daemon
+ * index.ts — CLI entry point for coogle
  *
- * Usage: workspace-daemon <command>
+ * Usage: coogle <command>
  *
  * Commands:
  *   serve            Start the daemon (IPC server + workspace-mcp child)
@@ -14,7 +14,7 @@
  *   setup            Interactive first-time setup (zero to working)
  */
 
-import { WorkspaceDaemonClient } from "./ipc-client.js";
+import { CoogleClient } from "./ipc-client.js";
 import { serve } from "./daemon.js";
 import { runMcpServer } from "./mcp-server.js";
 import { loadConfig, CONFIG_FILE } from "./config.js";
@@ -44,7 +44,7 @@ function generatePlist(): string {
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.pai.workspace-daemon</string>
+  <string>com.pai.coogle</string>
   <key>ProgramArguments</key>
   <array>
     <string>${nodePath}</string>
@@ -54,9 +54,9 @@ function generatePlist(): string {
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/tmp/workspace-daemon.log</string>
+  <string>/tmp/coogle.log</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/workspace-daemon.log</string>
+  <string>/tmp/coogle.log</string>
   <key>ThrottleInterval</key>
   <integer>3</integer>
   <key>EnvironmentVariables</key>
@@ -91,7 +91,7 @@ async function main(): Promise<void> {
 
     case "status": {
       const config = loadConfig();
-      const client = new WorkspaceDaemonClient(config.socketPath);
+      const client = new CoogleClient(config.socketPath);
       try {
         const status = await client.status();
         const s = status as {
@@ -100,7 +100,7 @@ async function main(): Promise<void> {
           uptime?: number;
           childRunning?: boolean;
         };
-        console.log("workspace-daemon status:");
+        console.log("coogle status:");
         console.log(`  Child connected : ${s.connected ?? false}`);
         console.log(`  Child running   : ${s.childRunning ?? false}`);
         console.log(`  Queue length    : ${s.queueLength ?? 0}`);
@@ -115,7 +115,7 @@ async function main(): Promise<void> {
 
     case "restart": {
       const config = loadConfig();
-      const client = new WorkspaceDaemonClient(config.socketPath);
+      const client = new CoogleClient(config.socketPath);
       try {
         await client.restartChild();
         console.log("workspace-mcp child restarted.");
@@ -129,7 +129,7 @@ async function main(): Promise<void> {
 
     case "config": {
       const config = loadConfig();
-      console.log("workspace-daemon resolved config:");
+      console.log("coogle resolved config:");
       console.log(`  Config file : ${CONFIG_FILE}`);
       console.log(JSON.stringify(config, null, 2));
       break;
@@ -141,7 +141,7 @@ async function main(): Promise<void> {
         homedir(),
         "Library",
         "LaunchAgents",
-        "com.pai.workspace-daemon.plist"
+        "com.pai.coogle.plist"
       );
       process.stderr.write(
         [
@@ -150,7 +150,7 @@ async function main(): Promise<void> {
           `#    node dist/index.js generate-plist > ${plistPath}`,
           `# 2. launchctl load ${plistPath}`,
           "# 3. To stop:  launchctl unload " + plistPath,
-          "# 4. To restart: launchctl kickstart -k gui/$(id -u)/com.pai.workspace-daemon",
+          "# 4. To restart: launchctl kickstart -k gui/$(id -u)/com.pai.coogle",
           "",
         ].join("\n")
       );
@@ -166,7 +166,7 @@ async function main(): Promise<void> {
     default: {
       console.error(
         [
-          "Usage: workspace-daemon <command>",
+          "Usage: coogle <command>",
           "",
           "Commands:",
           "  serve            Start the daemon (IPC server + workspace-mcp child)",
@@ -186,6 +186,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  process.stderr.write(`[workspace-daemon] Fatal error: ${err}\n`);
+  process.stderr.write(`[coogle] Fatal error: ${err}\n`);
   process.exit(1);
 });

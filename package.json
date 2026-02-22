@@ -1,6 +1,7 @@
 {
-  "name": "workspace-daemon",
+  "name": "coogle",
   "version": "0.1.0",
+  "description": "Coogle — Google Workspace MCP multiplexer for Claude",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {

@@ -5,33 +5,33 @@
 
   Generate the actual plist for your system:
 
-    node dist/index.js generate-plist > ~/Library/LaunchAgents/com.pai.workspace-daemon.plist
+    node dist/index.js generate-plist > ~/Library/LaunchAgents/com.pai.coogle.plist
 
   Then load it:
 
-    launchctl load ~/Library/LaunchAgents/com.pai.workspace-daemon.plist
+    launchctl load ~/Library/LaunchAgents/com.pai.coogle.plist
 
   To unload:
 
-    launchctl unload ~/Library/LaunchAgents/com.pai.workspace-daemon.plist
+    launchctl unload ~/Library/LaunchAgents/com.pai.coogle.plist
 -->
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.pai.workspace-daemon</string>
+  <string>com.pai.coogle</string>
   <key>ProgramArguments</key>
   <array>
     <!-- Replace with the output of: node dist/index.js generate-plist -->
     <string>/path/to/node</string>
-    <string>/path/to/workspace-daemon/dist/index.js</string>
+    <string>/path/to/coogle/dist/index.js</string>
     <string>serve</string>
   </array>
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/tmp/workspace-daemon.log</string>
+  <string>/tmp/coogle.log</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/workspace-daemon.log</string>
+  <string>/tmp/coogle.log</string>
   <key>ThrottleInterval</key>
   <integer>3</integer>
   <key>EnvironmentVariables</key>

@@ -1,7 +1,7 @@
 /**
  * ipc-client.ts — IPC client for the MCP shim
  *
- * WorkspaceDaemonClient connects to the Unix Domain Socket served by daemon.ts
+ * CoogleClient connects to the Unix Domain Socket served by daemon.ts
  * and forwards tool calls to the daemon. Uses fresh socket connection per call
  * (connect → write JSON + newline → read response line → parse → destroy).
  * This keeps the client stateless and avoids connection management complexity.
@@ -17,7 +17,7 @@ import { randomUUID } from "node:crypto";
 // ---------------------------------------------------------------------------
 
 /** Default socket path — used when no config is available */
-export const IPC_SOCKET_PATH = "/tmp/workspace-daemon.sock";
+export const IPC_SOCKET_PATH = "/tmp/coogle.sock";
 
 /** Timeout for IPC calls (60 seconds) */
 const IPC_TIMEOUT_MS = 60_000;
@@ -46,13 +46,13 @@ export interface ToolDefinition {
 // ---------------------------------------------------------------------------
 
 /**
- * Thin IPC proxy that forwards tool calls to the workspace-daemon over a Unix
+ * Thin IPC proxy that forwards tool calls to coogle over a Unix
  * Domain Socket. Each call opens a fresh connection, sends one NDJSON request,
  * reads the response, and closes. Stateless and simple.
  *
  * @param socketPath - Optional socket path override. Defaults to IPC_SOCKET_PATH.
  */
-export class WorkspaceDaemonClient {
+export class CoogleClient {
   private readonly socketPath: string;
 
   constructor(socketPath?: string) {
@@ -166,7 +166,7 @@ export class WorkspaceDaemonClient {
         if (err.code === "ENOENT" || err.code === "ECONNREFUSED") {
           finish(
             new Error(
-              "Workspace daemon not running. Start it with: node dist/index.js serve"
+              "Coogle daemon not running. Start it with: node dist/index.js serve"
             )
           );
         } else {

@@ -1,5 +1,5 @@
 /**
- * daemon.ts — The persistent workspace-daemon
+ * daemon.ts — The persistent coogle daemon
  *
  * Spawns a single `uvx workspace-mcp --tool-tier core` child process and
  * multiplexes IPC requests from multiple MCP shim clients through it.
@@ -32,7 +32,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { ToolDefinition } from "./ipc-client.js";
-import { WorkspaceDaemonConfig, expandHome, ensureConfigDir } from "./config.js";
+import { CoogleConfig, expandHome, ensureConfigDir } from "./config.js";
 
 // ---------------------------------------------------------------------------
 // Protocol types
@@ -80,7 +80,7 @@ let lastRespawnAttempt = 0;
 const RESPAWN_COOLDOWN_MS = 3_000;
 
 // Config reference (set by serve())
-let daemonConfig: WorkspaceDaemonConfig;
+let daemonConfig: CoogleConfig;
 
 // ---------------------------------------------------------------------------
 // Credentials helper
@@ -97,7 +97,7 @@ function loadCredentials(): Record<string, string> {
     const clientId = process.env["GOOGLE_OAUTH_CLIENT_ID"];
     const clientSecret = process.env["GOOGLE_OAUTH_CLIENT_SECRET"];
     if (clientId || clientSecret) {
-      process.stderr.write("[workspace-daemon] Loaded credentials from env vars.\n");
+      process.stderr.write("[coogle] Loaded credentials from env vars.\n");
     }
     const result: Record<string, string> = {};
     if (clientId) result["GOOGLE_OAUTH_CLIENT_ID"] = clientId;
@@ -110,7 +110,7 @@ function loadCredentials(): Record<string, string> {
     if (creds.clientId) result["GOOGLE_OAUTH_CLIENT_ID"] = creds.clientId;
     if (creds.clientSecret) result["GOOGLE_OAUTH_CLIENT_SECRET"] = creds.clientSecret;
     if (Object.keys(result).length > 0) {
-      process.stderr.write("[workspace-daemon] Loaded credentials from config (manual).\n");
+      process.stderr.write("[coogle] Loaded credentials from config (manual).\n");
     }
     return result;
   }
@@ -140,13 +140,13 @@ function loadCredentialsFromClaudeJson(): Record<string, string> {
         if (typeof v === "string") result[k] = v;
       }
       process.stderr.write(
-        `[workspace-daemon] Loaded credentials from ${claudeJsonPath} (keys: ${Object.keys(result).join(", ")})\n`
+        `[coogle] Loaded credentials from ${claudeJsonPath} (keys: ${Object.keys(result).join(", ")})\n`
       );
       return result;
     }
   } catch (err) {
     process.stderr.write(
-      `[workspace-daemon] Could not read credentials from ${claudeJsonPath}: ${err}\n`
+      `[coogle] Could not read credentials from ${claudeJsonPath}: ${err}\n`
     );
   }
   return {};
@@ -182,7 +182,7 @@ export function resolveMcpCommand(command: string): string {
  * Credentials are loaded based on config and merged into the child env.
  */
 async function spawnChild(): Promise<void> {
-  process.stderr.write("[workspace-daemon] Spawning workspace-mcp child...\n");
+  process.stderr.write("[coogle] Spawning workspace-mcp child...\n");
 
   // Disconnect and clear any existing client first
   if (mcpClient) {
@@ -206,7 +206,7 @@ async function spawnChild(): Promise<void> {
   const command = resolveMcpCommand(daemonConfig.mcp.command);
   const args = daemonConfig.mcp.args;
 
-  process.stderr.write(`[workspace-daemon] Running: ${command} ${args.join(" ")}\n`);
+  process.stderr.write(`[coogle] Running: ${command} ${args.join(" ")}\n`);
 
   const transport = new StdioClientTransport({
     command,
@@ -215,7 +215,7 @@ async function spawnChild(): Promise<void> {
   });
 
   const client = new Client(
-    { name: "workspace-daemon", version: "0.1.0" },
+    { name: "coogle", version: "0.1.0" },
     { capabilities: {} }
   );
 
@@ -224,22 +224,22 @@ async function spawnChild(): Promise<void> {
   try {
     await client.connect(transport);
     isConnected = true;
-    process.stderr.write("[workspace-daemon] Connected to workspace-mcp child.\n");
+    process.stderr.write("[coogle] Connected to workspace-mcp child.\n");
 
     // Watch for transport close — mark disconnected for auto-respawn
     transport.onclose = () => {
-      process.stderr.write("[workspace-daemon] Transport closed.\n");
+      process.stderr.write("[coogle] Transport closed.\n");
       isConnected = false;
       mcpClient = null;
       drainQueueWithError(new Error("workspace-mcp transport closed"));
     };
 
     transport.onerror = (err) => {
-      process.stderr.write(`[workspace-daemon] Transport error: ${err.message}\n`);
+      process.stderr.write(`[coogle] Transport error: ${err.message}\n`);
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[workspace-daemon] Failed to connect to child: ${msg}\n`);
+    process.stderr.write(`[coogle] Failed to connect to child: ${msg}\n`);
     isConnected = false;
     mcpClient = null;
     throw new Error(`Failed to connect to workspace-mcp: ${msg}`);
@@ -273,20 +273,20 @@ async function drainQueue(): Promise<void> {
       const now = Date.now();
       if (now - lastRespawnAttempt < RESPAWN_COOLDOWN_MS) {
         process.stderr.write(
-          `[workspace-daemon] Respawn on cooldown (${RESPAWN_COOLDOWN_MS}ms). Rejecting queued call.\n`
+          `[coogle] Respawn on cooldown (${RESPAWN_COOLDOWN_MS}ms). Rejecting queued call.\n`
         );
         const item = callQueue.shift()!;
         item.reject(new Error("workspace-mcp child is not connected (respawn on cooldown)"));
         continue;
       }
       lastRespawnAttempt = now;
-      process.stderr.write("[workspace-daemon] Child disconnected — attempting respawn...\n");
+      process.stderr.write("[coogle] Child disconnected — attempting respawn...\n");
       try {
         await spawnChild();
-        process.stderr.write("[workspace-daemon] Respawn succeeded.\n");
+        process.stderr.write("[coogle] Respawn succeeded.\n");
       } catch (respawnErr) {
         const msg = respawnErr instanceof Error ? respawnErr.message : String(respawnErr);
-        process.stderr.write(`[workspace-daemon] Respawn failed: ${msg}\n`);
+        process.stderr.write(`[coogle] Respawn failed: ${msg}\n`);
         const item = callQueue.shift()!;
         item.reject(new Error(`workspace-mcp respawn failed: ${msg}`));
         continue;
@@ -429,7 +429,7 @@ function startIpcServer(socketPath: string): Server {
   if (existsSync(socketPath)) {
     try {
       unlinkSync(socketPath);
-      process.stderr.write("[workspace-daemon] Removed stale socket file.\n");
+      process.stderr.write("[coogle] Removed stale socket file.\n");
     } catch {
       // If we can't remove it, bind will fail with a clear error
     }
@@ -468,12 +468,12 @@ function startIpcServer(socketPath: string): Server {
   });
 
   server.on("error", (err) => {
-    process.stderr.write(`[workspace-daemon] IPC server error: ${err}\n`);
+    process.stderr.write(`[coogle] IPC server error: ${err}\n`);
   });
 
   server.listen(socketPath, () => {
     process.stderr.write(
-      `[workspace-daemon] IPC server listening on ${socketPath}\n`
+      `[coogle] IPC server listening on ${socketPath}\n`
     );
   });
 
@@ -484,33 +484,33 @@ function startIpcServer(socketPath: string): Server {
 // Main daemon entry point
 // ---------------------------------------------------------------------------
 
-export async function serve(config: WorkspaceDaemonConfig): Promise<void> {
+export async function serve(config: CoogleConfig): Promise<void> {
   daemonConfig = config;
   startTime = Date.now();
 
   // Ensure config directory and default config exist
   ensureConfigDir();
 
-  process.stderr.write("[workspace-daemon] Starting daemon...\n");
+  process.stderr.write("[coogle] Starting daemon...\n");
   process.stderr.write(
-    `[workspace-daemon] Socket: ${config.socketPath}\n`
+    `[coogle] Socket: ${config.socketPath}\n`
   );
 
   try {
     await spawnChild();
   } catch (err) {
     process.stderr.write(
-      `[workspace-daemon] WARNING: Could not connect to workspace-mcp at startup: ${err}\n`
+      `[coogle] WARNING: Could not connect to workspace-mcp at startup: ${err}\n`
     );
     process.stderr.write(
-      "[workspace-daemon] Will retry on first IPC call. Continuing...\n"
+      "[coogle] Will retry on first IPC call. Continuing...\n"
     );
   }
 
   const server = startIpcServer(config.socketPath);
 
   const shutdown = (signal: string): void => {
-    process.stderr.write(`\n[workspace-daemon] ${signal} received. Stopping.\n`);
+    process.stderr.write(`\n[coogle] ${signal} received. Stopping.\n`);
 
     server.close();
     try {

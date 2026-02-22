@@ -22,8 +22,8 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { WorkspaceDaemonClient, ToolDefinition } from "./ipc-client.js";
-import { WorkspaceDaemonConfig } from "./config.js";
+import { CoogleClient, ToolDefinition } from "./ipc-client.js";
+import { CoogleConfig } from "./config.js";
 
 const RETRY_COUNT = 3;
 const RETRY_DELAY_MS = 1000;
@@ -39,7 +39,7 @@ function sleep(ms: number): Promise<void> {
  * Try to list tools from the daemon, retrying on failure.
  */
 async function listToolsWithRetry(
-  client: WorkspaceDaemonClient
+  client: CoogleClient
 ): Promise<ToolDefinition[]> {
   let lastErr: Error = new Error("unknown");
 
@@ -50,7 +50,7 @@ async function listToolsWithRetry(
     } catch (err) {
       lastErr = err instanceof Error ? err : new Error(String(err));
       process.stderr.write(
-        `[workspace-shim] Failed to list tools (attempt ${attempt}/${RETRY_COUNT}): ${lastErr.message}\n`
+        `[coogle-shim] Failed to list tools (attempt ${attempt}/${RETRY_COUNT}): ${lastErr.message}\n`
       );
       if (attempt < RETRY_COUNT) {
         await sleep(RETRY_DELAY_MS);
@@ -59,7 +59,7 @@ async function listToolsWithRetry(
   }
 
   throw new Error(
-    `workspace-daemon not reachable after ${RETRY_COUNT} attempts: ${lastErr.message}\n` +
+    `coogle daemon not reachable after ${RETRY_COUNT} attempts: ${lastErr.message}\n` +
       `Start the daemon with: node dist/index.js serve`
   );
 }
@@ -67,22 +67,22 @@ async function listToolsWithRetry(
 /**
  * Start the MCP shim.
  */
-export async function runMcpServer(config: WorkspaceDaemonConfig): Promise<void> {
-  process.stderr.write("[workspace-shim] Starting MCP shim...\n");
+export async function runMcpServer(config: CoogleConfig): Promise<void> {
+  process.stderr.write("[coogle-shim] Starting MCP shim...\n");
 
-  const daemonClient = new WorkspaceDaemonClient(config.socketPath);
+  const daemonClient = new CoogleClient(config.socketPath);
 
   // Discover tools from the daemon
   let tools: ToolDefinition[];
   try {
     tools = await listToolsWithRetry(daemonClient);
   } catch (err) {
-    process.stderr.write(`[workspace-shim] FATAL: ${err}\n`);
+    process.stderr.write(`[coogle-shim] FATAL: ${err}\n`);
     process.exit(1);
   }
 
   process.stderr.write(
-    `[workspace-shim] Discovered ${tools.length} tools from daemon.\n`
+    `[coogle-shim] Discovered ${tools.length} tools from daemon.\n`
   );
 
   // Build a name→definition map for fast lookup in CallTool handler
@@ -92,7 +92,7 @@ export async function runMcpServer(config: WorkspaceDaemonConfig): Promise<void>
 
   // Use the low-level Server class so we can pass inputSchema as-is
   const server = new Server(
-    { name: "workspace", version: "0.1.0" },
+    { name: "coogle", version: "0.1.0" },
     {
       capabilities: {
         tools: {},
@@ -159,12 +159,12 @@ export async function runMcpServer(config: WorkspaceDaemonConfig): Promise<void>
   });
 
   process.stderr.write(
-    `[workspace-shim] Registered ${tools.length} tools via direct handlers.\n`
+    `[coogle-shim] Registered ${tools.length} tools via direct handlers.\n`
   );
 
   // Start the MCP server over stdio
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  process.stderr.write("[workspace-shim] MCP shim running.\n");
+  process.stderr.write("[coogle-shim] MCP shim running.\n");
 }
