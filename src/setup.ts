@@ -426,8 +426,30 @@ async function stepTestDaemon(
   const STARTUP_TIMEOUT_MS = 15_000;
   const POLL_INTERVAL_MS = 500;
 
-  // Remove stale socket from previous test
+  // Check if a daemon is already running and healthy
   if (existsSync(socketPath)) {
+    info("Existing daemon socket found — checking if it's alive...");
+    try {
+      const client = new CoogleClient(socketPath);
+      const status = await client.status();
+      const s = status as { connected?: boolean };
+
+      if (s.connected) {
+        ok("Existing daemon is running and connected");
+        info("Discovering tools from existing daemon...");
+        const tools = await client.listTools();
+        const toolCount = tools.length;
+        if (toolCount > 0) {
+          ok(`Tools discovered: ${cyan(String(toolCount))}`);
+          info("Skipping test daemon — existing daemon is healthy");
+          return { toolCount };
+        }
+      }
+    } catch {
+      info("Existing socket is stale — will spawn a test daemon");
+    }
+
+    // Remove stale socket
     try {
       unlinkSync(socketPath);
     } catch {
