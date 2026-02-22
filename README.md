@@ -129,7 +129,7 @@ Config lives at `~/.config/coogle/config.json`. It is created automatically by `
   "socketPath": "/tmp/coogle.sock",
   "mcp": {
     "command": "uvx",
-    "args": ["coogle-mcp", "--tool-tier", "core"]
+    "args": ["workspace-mcp", "--tool-tier", "core"]
   },
   "credentials": {
     "source": "claude-json",
@@ -155,7 +155,7 @@ Config lives at `~/.config/coogle/config.json`. It is created automatically by `
 |-------|---------|-------------|
 | `socketPath` | `/tmp/coogle.sock` | Unix Domain Socket path for IPC |
 | `mcp.command` | `uvx` | Command to run coogle-mcp |
-| `mcp.args` | `["coogle-mcp", "--tool-tier", "core"]` | Arguments for coogle-mcp |
+| `mcp.args` | `["workspace-mcp", "--tool-tier", "core"]` | Arguments for the Google Workspace MCP backend |
 | `credentials.source` | `claude-json` | Where to load Google OAuth credentials from |
 | `credentials.claudeJsonPath` | `~/.claude.json` | Path to Claude config (for `claude-json` source) |
 | `credentials.mcpServerName` | `coogle` | MCP server key to read credentials from |

@@ -278,7 +278,7 @@ Config is loaded from `~/.config/coogle/config.json` using a deep-merge strategy
 ```typescript
 const DEFAULTS: CoogleConfig = {
   socketPath: "/tmp/coogle.sock",
-  mcp: { command: "uvx", args: ["coogle-mcp", "--tool-tier", "core"] },
+  mcp: { command: "uvx", args: ["workspace-mcp", "--tool-tier", "core"] },
   credentials: { source: "claude-json", claudeJsonPath: "~/.claude.json", mcpServerName: "coogle" },
   callTimeoutMs: 120_000,
   logLevel: "info",
