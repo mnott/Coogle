@@ -31,7 +31,7 @@ Claude Code (session 3)
 The fastest path — run the interactive setup wizard directly with npx:
 
 ```bash
-npx -y coogle setup
+npx -y @tekmidian/coogle setup
 ```
 
 That's it. The wizard handles everything: environment check, credentials, config, daemon install, launchd service, and Claude config patching.
