@@ -267,7 +267,7 @@ loadCredentials()
           └── return { GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET }
 ```
 
-The `claude-json` source reads credentials from `~/.claude.json` where they were originally configured. This means existing users can switch to Coogle without changing their credential storage.
+The `claude-json` source reads the OAuth Client ID and Client Secret from the named MCP server's `env` block in `~/.claude.json`. Note: OAuth user tokens (obtained after completing the Google sign-in flow) are managed independently by `workspace-mcp` and stored in `~/.google_workspace_mcp/credentials/` — Coogle does not read or write those files.
 
 ---
 

@@ -51,7 +51,7 @@ node dist/index.js setup
 The wizard walks you through eight steps:
 
 1. **Environment check** — verifies Node and `uvx` are available
-2. **Credentials** — finds Google OAuth credentials in `~/.claude.json` or prompts for them manually
+2. **Credentials** — finds Google OAuth Client ID and Secret from `~/.claude.json` (any MCP server entry with `GOOGLE_OAUTH_CLIENT_ID` in its `env` block) or prompts for them manually
 3. **Config** — writes `~/.config/coogle/config.json`
 4. **Build check** — confirms `dist/index.js` exists
 5. **Daemon test** — starts a temporary daemon, verifies the IPC socket, counts available tools
@@ -272,17 +272,18 @@ node dist/index.js restart
 
 **No tools discovered / tool count is 0**
 
-`coogle-mcp` started but returned no tools. This usually means authentication has expired. Re-run the setup:
+`coogle-mcp` started but returned no tools. This usually means the Google OAuth token has expired or is missing.
+
+`workspace-mcp` manages its own OAuth tokens independently — they are stored in `~/.google_workspace_mcp/credentials/`. To re-authenticate, delete the cached token file and restart the daemon:
 
 ```bash
-node dist/index.js setup
+rm -r ~/.google_workspace_mcp/credentials/
+node dist/index.js restart
 ```
 
-Or trigger a fresh Google OAuth flow via `coogle-mcp` directly:
+`workspace-mcp` will prompt for a new OAuth flow on the next call.
 
-```bash
-coogle restart
-```
+Note: re-running `node dist/index.js setup` will **not** fix expired tokens. The setup wizard only handles the OAuth Client ID and Client Secret (app credentials). Token lifecycle is managed entirely by `workspace-mcp`.
 
 **Daemon keeps crashing**
 
@@ -310,7 +311,7 @@ Restart Claude Code to apply.
 
 ## Security
 
-- Google OAuth credentials are read from `~/.claude.json` or `~/.config/coogle/config.json`. Both files are local and not transmitted anywhere.
+- Google OAuth app credentials (Client ID and Client Secret) are read from `~/.claude.json` or `~/.config/coogle/config.json`. OAuth tokens obtained after authentication are managed by `workspace-mcp` and stored in `~/.google_workspace_mcp/credentials/`. All files are local and not transmitted anywhere by Coogle.
 - The daemon communicates with `coogle-mcp` over stdio (same machine, same user).
 - The IPC socket at `/tmp/coogle.sock` is local only and accessible only to the current user.
 - No credentials are ever sent over the network by coogle itself — all OAuth flows are handled by `coogle-mcp`.
