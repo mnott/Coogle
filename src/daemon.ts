@@ -126,14 +126,14 @@ function loadCredentials(): Record<string, string> {
 function loadCredentialsFromClaudeJson(): Record<string, string> {
   const rawPath = daemonConfig.credentials.claudeJsonPath ?? "~/.claude.json";
   const claudeJsonPath = expandHome(rawPath);
-  const serverKey = daemonConfig.credentials.mcpServerName ?? "workspace";
+  const serverKey = daemonConfig.credentials.mcpServerName ?? "coogle";
 
   try {
     const raw = readFileSync(claudeJsonPath, "utf-8");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const mcpServers = parsed["mcpServers"] as Record<string, unknown> | undefined;
-    const workspace = mcpServers?.[serverKey] as Record<string, unknown> | undefined;
-    const env = workspace?.["env"] as Record<string, string> | undefined;
+    const serverEntry = mcpServers?.[serverKey] as Record<string, unknown> | undefined;
+    const env = serverEntry?.["env"] as Record<string, string> | undefined;
     if (env && typeof env === "object") {
       const result: Record<string, string> = {};
       for (const [k, v] of Object.entries(env)) {
@@ -410,7 +410,7 @@ async function handleRequest(request: IpcRequest, socket: Socket): Promise<void>
     return;
   }
 
-  // All other methods are workspace tool calls
+  // All other methods are coogle-mcp tool calls
   try {
     const result = await enqueueCall(method, params);
     sendResponse(socket, { id, ok: true, result });

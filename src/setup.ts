@@ -247,7 +247,7 @@ async function stepCredentials(): Promise<CredentialInfo> {
         }
       }
 
-      warn(`~/.claude.json exists but no workspace server with Google OAuth env vars found`);
+      warn(`~/.claude.json exists but no coogle server with Google OAuth env vars found`);
     } catch (err) {
       warn(`Could not parse ~/.claude.json: ${err}`);
     }
@@ -306,7 +306,7 @@ async function stepWriteConfig(
       credentials: {
         source: "claude-json",
         claudeJsonPath: "~/.claude.json",
-        mcpServerName: creds.claudeJsonMcpServerName ?? "workspace",
+        mcpServerName: creds.claudeJsonMcpServerName ?? "coogle",
       },
       callTimeoutMs: 120000,
       logLevel: "info",
@@ -334,7 +334,7 @@ async function stepWriteConfig(
   info(`MCP args:     ${cyan(mcpArgs.join(" "))}`);
   info(
     `Credentials:  ${creds.source === "claude-json"
-      ? cyan("from ~/.claude.json (server: " + (creds.claudeJsonMcpServerName ?? "workspace") + ")")
+      ? cyan("from ~/.claude.json (server: " + (creds.claudeJsonMcpServerName ?? "coogle") + ")")
       : cyan("manual (stored in config)")}`
   );
 
@@ -645,7 +645,7 @@ async function stepUpdateClaudeConfig(indexJsPath: string): Promise<boolean> {
 
   const mcpServers = parsed["mcpServers"] as Record<string, unknown> | undefined;
 
-  // Find the workspace server and show current config
+  // Find the coogle server and show current config
   if (mcpServers) {
     for (const [serverName, serverConfig] of Object.entries(mcpServers)) {
       const srvCfg = serverConfig as Record<string, unknown>;
@@ -653,7 +653,7 @@ async function stepUpdateClaudeConfig(indexJsPath: string): Promise<boolean> {
         (srvCfg["env"] as Record<string, string> | undefined)?.[
           "GOOGLE_OAUTH_CLIENT_ID"
         ];
-      if (hasGoogleCreds || serverName === "workspace") {
+      if (hasGoogleCreds || serverName === "coogle") {
         const currentCmd = srvCfg["command"] as string | undefined;
         const currentArgs = (srvCfg["args"] as string[] | undefined) ?? [];
         info(`Server name: ${cyan(serverName)}`);
@@ -686,7 +686,7 @@ async function stepUpdateClaudeConfig(indexJsPath: string): Promise<boolean> {
     throw new Error(`Failed to backup ~/.claude.json: ${err}`);
   }
 
-  // Find the workspace server key (first one with Google creds, or "workspace")
+  // Find the coogle server key (first one with Google creds, or "coogle")
   let targetServerName: string | null = null;
   if (mcpServers) {
     for (const [serverName, serverConfig] of Object.entries(mcpServers)) {
@@ -697,9 +697,9 @@ async function stepUpdateClaudeConfig(indexJsPath: string): Promise<boolean> {
         break;
       }
     }
-    // Fallback: use "workspace" if it exists
-    if (!targetServerName && mcpServers["workspace"]) {
-      targetServerName = "workspace";
+    // Fallback: use "coogle" if it exists
+    if (!targetServerName && mcpServers["coogle"]) {
+      targetServerName = "coogle";
     }
     // Last resort: use first key
     if (!targetServerName) {

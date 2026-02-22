@@ -60,7 +60,7 @@ export class CoogleClient {
   }
 
   /**
-   * Call a workspace tool by name with the given params.
+   * Call a coogle-mcp tool by name with the given params.
    * Returns the tool result or throws on error.
    */
   async call(method: string, params: Record<string, unknown>): Promise<unknown> {

@@ -33,7 +33,7 @@ export interface CoogleConfig {
     clientSecret?: string;
   };
 
-  /** Timeout for workspace tool calls (milliseconds) */
+  /** Timeout for coogle-mcp tool calls (milliseconds) */
   callTimeoutMs: number;
 
   /** Log level */
@@ -53,7 +53,7 @@ const DEFAULTS: CoogleConfig = {
   credentials: {
     source: "claude-json",
     claudeJsonPath: "~/.claude.json",
-    mcpServerName: "workspace",
+    mcpServerName: "coogle",
   },
   callTimeoutMs: 120_000,
   logLevel: "info",
@@ -69,7 +69,7 @@ const CONFIG_TEMPLATE = `{
   "credentials": {
     "source": "claude-json",
     "claudeJsonPath": "~/.claude.json",
-    "mcpServerName": "workspace"
+    "mcpServerName": "coogle"
   },
   "callTimeoutMs": 120000,
   "logLevel": "info"

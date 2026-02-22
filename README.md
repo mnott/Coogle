@@ -56,7 +56,7 @@ The wizard walks you through eight steps:
 4. **Build check** — confirms `dist/index.js` exists
 5. **Daemon test** — starts a temporary daemon, verifies the IPC socket, counts available tools
 6. **launchd service** — installs `com.pai.coogle` as a macOS launch agent (auto-starts on login)
-7. **Claude config** — updates `~/.claude.json` to point the `workspace` MCP server at the coogle shim
+7. **Claude config** — updates `~/.claude.json` to point the `coogle` MCP server at the coogle shim
 8. **Summary** — shows what was done and how to roll back
 
 After setup, restart Claude Code. The coogle shim starts automatically when Claude loads, discovers all tools from the daemon, and proxies every call.
@@ -134,7 +134,7 @@ Config lives at `~/.config/coogle/config.json`. It is created automatically by `
   "credentials": {
     "source": "claude-json",
     "claudeJsonPath": "~/.claude.json",
-    "mcpServerName": "workspace"
+    "mcpServerName": "coogle"
   },
   "callTimeoutMs": 120000,
   "logLevel": "info"
@@ -158,7 +158,7 @@ Config lives at `~/.config/coogle/config.json`. It is created automatically by `
 | `mcp.args` | `["coogle-mcp", "--tool-tier", "core"]` | Arguments for coogle-mcp |
 | `credentials.source` | `claude-json` | Where to load Google OAuth credentials from |
 | `credentials.claudeJsonPath` | `~/.claude.json` | Path to Claude config (for `claude-json` source) |
-| `credentials.mcpServerName` | `workspace` | MCP server key to read credentials from |
+| `credentials.mcpServerName` | `coogle` | MCP server key to read credentials from |
 | `callTimeoutMs` | `120000` | Per-call timeout in milliseconds |
 | `logLevel` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
 
@@ -166,12 +166,12 @@ Config lives at `~/.config/coogle/config.json`. It is created automatically by `
 
 ## Manual Claude Code configuration
 
-If you prefer not to use the setup wizard, edit `~/.claude.json` directly. Find the `workspace` entry under `mcpServers` and replace its `command`/`args` with the coogle shim:
+If you prefer not to use the setup wizard, edit `~/.claude.json` directly. Find the `coogle` entry under `mcpServers` and replace its `command`/`args` with the coogle shim:
 
 ```json
 {
   "mcpServers": {
-    "workspace": {
+    "coogle": {
       "type": "stdio",
       "command": "node",
       "args": ["/path/to/coogle/dist/index.js", "mcp"]
@@ -296,7 +296,7 @@ This is the condition coogle was built to prevent. Verify all sessions are using
 node dist/index.js status
 ```
 
-Check that `~/.claude.json` shows `node .../coogle/dist/index.js mcp` as the workspace command.
+Check that `~/.claude.json` shows `node .../coogle/dist/index.js mcp` as the coogle MCP command.
 
 **Rollback to pre-coogle configuration**
 

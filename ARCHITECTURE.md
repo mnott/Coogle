@@ -27,7 +27,7 @@ Supporting modules:
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │ Claude Code session 1                                           │
-│   ~/.claude.json → mcpServers.workspace:                        │
+│   ~/.claude.json → mcpServers.coogle:                        │
 │   "node /path/to/coogle/dist/index.js mcp"                      │
 └──────────────────────────┬──────────────────────────────────────┘
                            │ MCP stdio JSON-RPC
@@ -91,7 +91,7 @@ The daemon and all shim instances communicate over a Unix Domain Socket at `/tmp
 ```json
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
-  "method": "mcp__workspace__search_gmail_messages",
+  "method": "mcp__coogle__search_gmail_messages",
   "params": {
     "query": "from:alice subject:invoice",
     "maxResults": 10
@@ -279,7 +279,7 @@ Config is loaded from `~/.config/coogle/config.json` using a deep-merge strategy
 const DEFAULTS: CoogleConfig = {
   socketPath: "/tmp/coogle.sock",
   mcp: { command: "uvx", args: ["coogle-mcp", "--tool-tier", "core"] },
-  credentials: { source: "claude-json", claudeJsonPath: "~/.claude.json", mcpServerName: "workspace" },
+  credentials: { source: "claude-json", claudeJsonPath: "~/.claude.json", mcpServerName: "coogle" },
   callTimeoutMs: 120_000,
   logLevel: "info",
 };
@@ -327,13 +327,13 @@ runSetup()
   ├── stepBuildCheck()      verify dist/index.js exists
   ├── stepTestDaemon()      spawn test daemon, poll for socket, IPC verify, kill
   ├── stepInstallLaunchd()  generate plist, launchctl load, wait for socket (macOS)
-  ├── stepUpdateClaudeConfig()  backup ~/.claude.json, patch workspace server entry
+  ├── stepUpdateClaudeConfig()  backup ~/.claude.json, patch coogle server entry
   └── stepDone()            print status summary and command reference
 ```
 
 **Test daemon pattern:** `stepTestDaemon` spawns a fresh `node dist/index.js serve` subprocess (not the launchd service), polls for the socket file with 500ms intervals up to 15 seconds, verifies via IPC (`status` then `list_tools`), then kills the subprocess. This validates the full daemon startup without modifying any persistent state.
 
-**Claude config patching:** The wizard finds the MCP server entry in `~/.claude.json` by looking for any entry with `GOOGLE_OAUTH_CLIENT_ID` in its `env` block, falling back to the `workspace` key. It replaces the entire entry with `{ type: "stdio", command: "node", args: [indexJsPath, "mcp"] }`. The OAuth env vars are intentionally removed — coogle reads them itself.
+**Claude config patching:** The wizard finds the MCP server entry in `~/.claude.json` by looking for any entry with `GOOGLE_OAUTH_CLIENT_ID` in its `env` block, falling back to the `coogle` key. It replaces the entire entry with `{ type: "stdio", command: "node", args: [indexJsPath, "mcp"] }`. The OAuth env vars are intentionally removed — coogle reads them itself.
 
 ---
 
