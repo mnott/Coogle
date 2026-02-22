@@ -189,7 +189,7 @@ async function stepEnvironment(): Promise<EnvInfo> {
   } else {
     fail("uvx not found in PATH");
     warn("Install with: pip install uv  OR  brew install uv");
-    warn("uvx is required to run workspace-mcp");
+    warn("uvx is required to run coogle-mcp");
   }
 
   if (env.isMacOS) {
@@ -456,7 +456,7 @@ async function stepTestDaemon(
     }
     throw new Error(
       `Daemon did not create socket at ${socketPath} within ${STARTUP_TIMEOUT_MS / 1000}s.\n` +
-        `  Check credentials and that workspace-mcp is accessible.`
+        `  Check credentials and that coogle-mcp is accessible.`
     );
   }
 
@@ -467,7 +467,7 @@ async function stepTestDaemon(
 
   let toolCount = 0;
   try {
-    // Small delay to let workspace-mcp child fully initialize
+    // Small delay to let coogle-mcp child fully initialize
     await sleep(1000);
 
     const status = await client.status();
@@ -478,9 +478,9 @@ async function stepTestDaemon(
     };
 
     if (s.connected) {
-      ok(`Connected to workspace-mcp child`);
+      ok(`Connected to coogle-mcp child`);
     } else {
-      warn(`workspace-mcp child not yet connected (it may still be starting)`);
+      warn(`coogle-mcp child not yet connected (it may still be starting)`);
     }
 
     // List tools — this may take a few seconds on first startup
@@ -491,7 +491,7 @@ async function stepTestDaemon(
     if (toolCount > 0) {
       ok(`Tools discovered: ${cyan(String(toolCount))}`);
     } else {
-      warn("No tools found — workspace-mcp may have failed to start");
+      warn("No tools found — coogle-mcp may have failed to start");
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -784,7 +784,7 @@ async function stepDone(opts: {
   process.stdout.write("\n");
   process.stdout.write(bold("  Commands:\n"));
   process.stdout.write(`    ${cyan(`node ${indexJsPath} status`)}    — Check daemon status\n`);
-  process.stdout.write(`    ${cyan(`node ${indexJsPath} restart`)}   — Restart workspace-mcp child\n`);
+  process.stdout.write(`    ${cyan(`node ${indexJsPath} restart`)}   — Restart coogle-mcp child\n`);
 
   const plistPath = join(homedir(), "Library", "LaunchAgents", "com.pai.coogle.plist");
   if (launchdInstalled) {

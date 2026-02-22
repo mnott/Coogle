@@ -1,6 +1,6 @@
 # Coogle
 
-Google Workspace MCP multiplexer for Claude Code. One persistent daemon holds the single `workspace-mcp` connection. Every Claude Code session goes through it. No more credential conflicts, no more 142 tools registering simultaneously.
+Google Workspace MCP multiplexer for Claude Code. One persistent daemon holds the single `coogle-mcp` connection. Every Claude Code session goes through it. No more credential conflicts, no more 142 tools registering simultaneously.
 
 ---
 
@@ -67,7 +67,7 @@ After setup, restart Claude Code. The coogle shim starts automatically when Clau
 
 Coogle has two runtime components:
 
-**Daemon** (`src/daemon.ts`) — a long-running process that spawns and owns a single `workspace-mcp` child via stdio. It listens on a Unix Domain Socket (`/tmp/coogle.sock`) and serializes all incoming tool calls through a queue. If the child crashes, it auto-respawns with a 3-second cooldown.
+**Daemon** (`src/daemon.ts`) — a long-running process that spawns and owns a single `coogle-mcp` child via stdio. It listens on a Unix Domain Socket (`/tmp/coogle.sock`) and serializes all incoming tool calls through a queue. If the child crashes, it auto-respawns with a 3-second cooldown.
 
 **MCP shim** (`src/mcp-server.ts`) — a thin proxy started by Claude Code in place of `uvx workspace-mcp`. On startup it connects to the daemon socket, dynamically discovers all available tools, registers them with the MCP SDK, and forwards every `tools/call` request to the daemon over IPC.
 
@@ -105,7 +105,7 @@ node dist/index.js mcp
 # Check daemon status
 node dist/index.js status
 
-# Restart the workspace-mcp child process
+# Restart the coogle-mcp child process
 node dist/index.js restart
 
 # Print the resolved configuration
@@ -154,8 +154,8 @@ Config lives at `~/.config/coogle/config.json`. It is created automatically by `
 | Field | Default | Description |
 |-------|---------|-------------|
 | `socketPath` | `/tmp/coogle.sock` | Unix Domain Socket path for IPC |
-| `mcp.command` | `uvx` | Command to run workspace-mcp |
-| `mcp.args` | `["workspace-mcp", "--tool-tier", "core"]` | Arguments for workspace-mcp |
+| `mcp.command` | `uvx` | Command to run coogle-mcp |
+| `mcp.args` | `["workspace-mcp", "--tool-tier", "core"]` | Arguments for coogle-mcp |
 | `credentials.source` | `claude-json` | Where to load Google OAuth credentials from |
 | `credentials.claudeJsonPath` | `~/.claude.json` | Path to Claude config (for `claude-json` source) |
 | `credentials.mcpServerName` | `workspace` | MCP server key to read credentials from |
@@ -180,7 +180,7 @@ If you prefer not to use the setup wizard, edit `~/.claude.json` directly. Find 
 }
 ```
 
-The `env` block with `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` is no longer needed in the Claude config — the daemon reads credentials directly and injects them into the `workspace-mcp` child environment.
+The `env` block with `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` is no longer needed in the Claude config — the daemon reads credentials directly and injects them into the `coogle-mcp` child environment.
 
 Keep a backup of the original config before editing:
 
@@ -220,7 +220,7 @@ tail -f /tmp/coogle.log
 
 ## Google Workspace tools
 
-The 142 available tools span 12 Google services. They are discovered dynamically from `workspace-mcp` on daemon startup — no hardcoded list.
+The 142 available tools span 12 Google services. They are discovered dynamically from `coogle-mcp` on daemon startup — no hardcoded list.
 
 | Service | Example tools |
 |---------|--------------|
@@ -256,9 +256,9 @@ launchctl list | grep coogle
 cat /tmp/coogle.log
 ```
 
-**"workspace-mcp child is not connected"**
+**"coogle-mcp child is not connected"**
 
-The daemon is running but `workspace-mcp` failed to start or crashed. Check the log:
+The daemon is running but `coogle-mcp` failed to start or crashed. Check the log:
 
 ```bash
 tail -50 /tmp/coogle.log
@@ -272,13 +272,13 @@ node dist/index.js restart
 
 **No tools discovered / tool count is 0**
 
-`workspace-mcp` started but returned no tools. This usually means authentication has expired. Re-run the setup:
+`coogle-mcp` started but returned no tools. This usually means authentication has expired. Re-run the setup:
 
 ```bash
 node dist/index.js setup
 ```
 
-Or trigger a fresh Google OAuth flow via `workspace-mcp` directly:
+Or trigger a fresh Google OAuth flow via `coogle-mcp` directly:
 
 ```bash
 uvx workspace-mcp --tool-tier core
@@ -290,15 +290,15 @@ Check `/tmp/coogle.log` for error messages. The daemon has a 3-second respawn co
 
 **Multiple Claude sessions getting stale results**
 
-This is the condition coogle was built to prevent. Verify all sessions are using the shim (not `uvx workspace-mcp` directly):
+This is the condition coogle was built to prevent. Verify all sessions are using the shim (not `uvx workspace-mcp` directly, which bypasses coogle):
 
 ```bash
 node dist/index.js status
 ```
 
-Check that `~/.claude.json` shows `node .../coogle/dist/index.js mcp` as the workspace command, not `uvx workspace-mcp`.
+Check that `~/.claude.json` shows `node .../coogle/dist/index.js mcp` as the workspace command, not `uvx workspace-mcp` (the direct connection that bypasses coogle).
 
-**Rollback to direct workspace-mcp**
+**Rollback to direct uvx workspace-mcp**
 
 ```bash
 cp ~/.claude.json.backup ~/.claude.json
@@ -311,16 +311,16 @@ Restart Claude Code to apply.
 ## Security
 
 - Google OAuth credentials are read from `~/.claude.json` or `~/.config/coogle/config.json`. Both files are local and not transmitted anywhere.
-- The daemon communicates with `workspace-mcp` over stdio (same machine, same user).
+- The daemon communicates with `coogle-mcp` over stdio (same machine, same user).
 - The IPC socket at `/tmp/coogle.sock` is local only and accessible only to the current user.
-- No credentials are ever sent over the network by coogle itself — all OAuth flows are handled by `workspace-mcp`.
+- No credentials are ever sent over the network by coogle itself — all OAuth flows are handled by `coogle-mcp`.
 
 ---
 
 ## Requirements
 
 - Node.js >= 18
-- `uvx` (from [uv](https://docs.astral.sh/uv/)) for running `workspace-mcp`
+- `uvx` (from [uv](https://docs.astral.sh/uv/)) for running `coogle-mcp`
 - Google Cloud project with OAuth 2.0 credentials (Client ID + Client Secret)
 - macOS for launchd auto-start (Linux works for manual daemon operation)
 

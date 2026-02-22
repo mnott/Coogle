@@ -5,10 +5,10 @@
  * Usage: coogle <command>
  *
  * Commands:
- *   serve            Start the daemon (IPC server + workspace-mcp child)
+ *   serve            Start the daemon (IPC server + coogle-mcp child)
  *   mcp              Start the MCP shim (thin proxy for Claude)
  *   status           Check daemon status
- *   restart          Restart the workspace-mcp child process
+ *   restart          Restart the coogle-mcp child process
  *   config           Print the resolved configuration
  *   generate-plist   Generate the launchd plist for this system
  *   setup            Interactive first-time setup (zero to working)
@@ -118,7 +118,7 @@ async function main(): Promise<void> {
       const client = new CoogleClient(config.socketPath);
       try {
         await client.restartChild();
-        console.log("workspace-mcp child restarted.");
+        console.log("coogle-mcp child restarted.");
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`Failed to restart child: ${msg}`);
@@ -169,10 +169,10 @@ async function main(): Promise<void> {
           "Usage: coogle <command>",
           "",
           "Commands:",
-          "  serve            Start the daemon (IPC server + workspace-mcp child)",
+          "  serve            Start the daemon (IPC server + coogle-mcp child)",
           "  mcp              Start the MCP shim (thin proxy for Claude)",
           "  status           Check daemon status",
-          "  restart          Restart the workspace-mcp child process",
+          "  restart          Restart the coogle-mcp child process",
           "  config           Print the resolved configuration",
           "  generate-plist   Generate launchd plist for this system (stdout)",
           "  setup            Interactive first-time setup (zero to working)",

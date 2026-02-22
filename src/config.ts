@@ -18,7 +18,7 @@ export interface CoogleConfig {
   /** Unix Domain Socket path for IPC */
   socketPath: string;
 
-  /** workspace-mcp command and arguments */
+  /** coogle-mcp command and arguments */
   mcp: {
     command: string;
     args: string[];

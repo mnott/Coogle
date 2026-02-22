@@ -5,7 +5,7 @@
  * multiplexes IPC requests from multiple MCP shim clients through it.
  *
  * Architecture:
- *   MCP shims (Claude sessions) → Unix socket → daemon → workspace-mcp child
+ *   MCP shims (Claude sessions) → Unix socket → daemon → coogle-mcp child
  *
  * IPC protocol: NDJSON over Unix Domain Socket (same pattern as Whazaa).
  *
@@ -17,11 +17,11 @@
  *   { "id": "uuid", "ok": false, "error": "message" }
  *
  * Special methods:
- *   list_tools    — List tools from workspace-mcp child
+ *   list_tools    — List tools from coogle-mcp child
  *   status        — Return daemon status
- *   restart_child — Kill and respawn workspace-mcp child
+ *   restart_child — Kill and respawn coogle-mcp child
  *
- * All other methods are forwarded as workspace-mcp tool calls.
+ * All other methods are forwarded as coogle-mcp tool calls.
  */
 
 import { existsSync, unlinkSync, readFileSync } from "node:fs";
@@ -52,7 +52,7 @@ interface IpcResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Request queue (serializes concurrent calls to workspace-mcp)
+// Request queue (serializes concurrent calls to coogle-mcp)
 // ---------------------------------------------------------------------------
 
 interface QueuedCall {
@@ -153,7 +153,7 @@ function loadCredentialsFromClaudeJson(): Record<string, string> {
 }
 
 // ---------------------------------------------------------------------------
-// workspace-mcp child management
+// coogle-mcp child management
 // ---------------------------------------------------------------------------
 
 /**
@@ -178,11 +178,11 @@ export function resolveMcpCommand(command: string): string {
 }
 
 /**
- * Spawn the workspace-mcp child via StdioClientTransport only.
+ * Spawn the coogle-mcp child via StdioClientTransport only.
  * Credentials are loaded based on config and merged into the child env.
  */
 async function spawnChild(): Promise<void> {
-  process.stderr.write("[coogle] Spawning workspace-mcp child...\n");
+  process.stderr.write("[coogle] Spawning coogle-mcp child...\n");
 
   // Disconnect and clear any existing client first
   if (mcpClient) {
@@ -224,14 +224,14 @@ async function spawnChild(): Promise<void> {
   try {
     await client.connect(transport);
     isConnected = true;
-    process.stderr.write("[coogle] Connected to workspace-mcp child.\n");
+    process.stderr.write("[coogle] Connected to coogle-mcp child.\n");
 
     // Watch for transport close — mark disconnected for auto-respawn
     transport.onclose = () => {
       process.stderr.write("[coogle] Transport closed.\n");
       isConnected = false;
       mcpClient = null;
-      drainQueueWithError(new Error("workspace-mcp transport closed"));
+      drainQueueWithError(new Error("coogle-mcp transport closed"));
     };
 
     transport.onerror = (err) => {
@@ -242,7 +242,7 @@ async function spawnChild(): Promise<void> {
     process.stderr.write(`[coogle] Failed to connect to child: ${msg}\n`);
     isConnected = false;
     mcpClient = null;
-    throw new Error(`Failed to connect to workspace-mcp: ${msg}`);
+    throw new Error(`Failed to connect to coogle-mcp: ${msg}`);
   }
 }
 
@@ -276,7 +276,7 @@ async function drainQueue(): Promise<void> {
           `[coogle] Respawn on cooldown (${RESPAWN_COOLDOWN_MS}ms). Rejecting queued call.\n`
         );
         const item = callQueue.shift()!;
-        item.reject(new Error("workspace-mcp child is not connected (respawn on cooldown)"));
+        item.reject(new Error("coogle-mcp child is not connected (respawn on cooldown)"));
         continue;
       }
       lastRespawnAttempt = now;
@@ -288,7 +288,7 @@ async function drainQueue(): Promise<void> {
         const msg = respawnErr instanceof Error ? respawnErr.message : String(respawnErr);
         process.stderr.write(`[coogle] Respawn failed: ${msg}\n`);
         const item = callQueue.shift()!;
-        item.reject(new Error(`workspace-mcp respawn failed: ${msg}`));
+        item.reject(new Error(`coogle-mcp respawn failed: ${msg}`));
         continue;
       }
     }
@@ -376,7 +376,7 @@ async function handleRequest(request: IpcRequest, socket: Socket): Promise<void>
       sendResponse(socket, {
         id,
         ok: false,
-        error: "workspace-mcp child is not connected",
+        error: "coogle-mcp child is not connected",
       });
       socket.end();
       return;
@@ -500,7 +500,7 @@ export async function serve(config: CoogleConfig): Promise<void> {
     await spawnChild();
   } catch (err) {
     process.stderr.write(
-      `[coogle] WARNING: Could not connect to workspace-mcp at startup: ${err}\n`
+      `[coogle] WARNING: Could not connect to coogle-mcp at startup: ${err}\n`
     );
     process.stderr.write(
       "[coogle] Will retry on first IPC call. Continuing...\n"

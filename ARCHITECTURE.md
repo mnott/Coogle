@@ -6,12 +6,12 @@ Technical reference for contributors and developers.
 
 ## Overview
 
-Coogle solves a concurrency problem: multiple Claude Code sessions cannot safely share a single `workspace-mcp` process. Coogle introduces a daemon that owns the sole `workspace-mcp` connection and serializes all calls. Each Claude Code session runs a thin MCP shim that proxies tool calls to the daemon over a Unix Domain Socket.
+Coogle solves a concurrency problem: multiple Claude Code sessions cannot safely share a single `coogle-mcp` process. Coogle introduces a daemon that owns the sole `coogle-mcp` connection and serializes all calls. Each Claude Code session runs a thin MCP shim that proxies tool calls to the daemon over a Unix Domain Socket.
 
 Two runtime components:
 
-- **Daemon** (`src/daemon.ts`) — owns the `workspace-mcp` child process, serves IPC, serializes calls through a queue
-- **MCP shim** (`src/mcp-server.ts`) — thin proxy started by Claude Code; no direct `workspace-mcp` connection
+- **Daemon** (`src/daemon.ts`) — owns the `coogle-mcp` child process, serves IPC, serializes calls through a queue
+- **MCP shim** (`src/mcp-server.ts`) — thin proxy started by Claude Code; no direct `coogle-mcp` connection
 
 Supporting modules:
 
@@ -100,7 +100,7 @@ The daemon and all shim instances communicate over a Unix Domain Socket at `/tmp
 ```
 
 - `id` — UUID generated per call (via `crypto.randomUUID()`), echoed in the response for correlation
-- `method` — tool name (forwarded to `workspace-mcp`) or a special daemon method
+- `method` — tool name (forwarded to `coogle-mcp`) or a special daemon method
 - `params` — tool-specific parameters, passed through unchanged
 
 ### Response format
@@ -125,21 +125,21 @@ Error:
 
 ### Special IPC methods
 
-These are handled directly by the daemon and never forwarded to `workspace-mcp`:
+These are handled directly by the daemon and never forwarded to `coogle-mcp`:
 
 | Method | Description |
 |--------|-------------|
-| `list_tools` | Returns all tools available from the `workspace-mcp` child |
+| `list_tools` | Returns all tools available from the `coogle-mcp` child |
 | `status` | Returns `{ connected, queueLength, uptime, childRunning }` |
-| `restart_child` | Kills and respawns the `workspace-mcp` child |
+| `restart_child` | Kills and respawns the `coogle-mcp` child |
 
-All other methods are forwarded as `workspace-mcp` tool calls.
+All other methods are forwarded as `coogle-mcp` tool calls.
 
 ---
 
 ## Call queue and serialization
 
-`workspace-mcp` is a single-threaded stdio process. Concurrent calls would interleave on its stdin and produce garbled output. The daemon serializes all calls through a queue with a mutex pattern.
+`coogle-mcp` is a single-threaded stdio process. Concurrent calls would interleave on its stdin and produce garbled output. The daemon serializes all calls through a queue with a mutex pattern.
 
 ```typescript
 interface QueuedCall {
@@ -176,7 +176,7 @@ The mutex (`processingPromise`) ensures only one `drainQueue` loop runs at a tim
 
 ---
 
-## workspace-mcp child lifecycle
+## coogle-mcp child lifecycle
 
 The child is spawned using `@modelcontextprotocol/sdk`'s `StdioClientTransport`:
 
@@ -211,13 +211,13 @@ runMcpServer(config)
   ├── build toolMap: Map<name, ToolDefinition>
   ├── new Server({ name: "coogle", version: "0.1.0" })
   ├── server.setRequestHandler(ListToolsRequestSchema, ...)
-  │     └── returns tools array directly from workspace-mcp
+  │     └── returns tools array directly from coogle-mcp
   ├── server.setRequestHandler(CallToolRequestSchema, ...)
   │     └── daemonClient.call(name, args)  →  IPC call
   └── server.connect(new StdioServerTransport())
 ```
 
-The shim uses the low-level `Server` class (not `McpServer`) to pass `inputSchema` objects from `workspace-mcp` through unchanged. Using the higher-level `McpServer` would require schema conversion that could lose information.
+The shim uses the low-level `Server` class (not `McpServer`) to pass `inputSchema` objects from `coogle-mcp` through unchanged. Using the higher-level `McpServer` would require schema conversion that could lose information.
 
 **stdout discipline:** The MCP JSON-RPC transport uses stdout. Any non-JSON bytes on stdout break the protocol. All debug output in `mcp-server.ts` goes to `process.stderr`. This rule applies to all code paths reachable during shim operation.
 
@@ -267,7 +267,7 @@ loadCredentials()
           └── return { GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET }
 ```
 
-The `claude-json` source reads credentials from the same `~/.claude.json` where they were originally configured for the direct `workspace-mcp` setup. This means existing users can switch to Coogle without changing their credential storage.
+The `claude-json` source reads credentials from the same `~/.claude.json` where they were originally configured for the direct `uvx workspace-mcp` setup. This means existing users can switch to Coogle without changing their credential storage.
 
 ---
 
@@ -278,7 +278,7 @@ Config is loaded from `~/.config/coogle/config.json` using a deep-merge strategy
 ```typescript
 const DEFAULTS: CoogleConfig = {
   socketPath: "/tmp/coogle.sock",
-  mcp: { command: "uvx", args: ["workspace-mcp", "--tool-tier", "core"] },
+  mcp: { command: "uvx", args: ["workspace-mcp", "--tool-tier", "core"] },  // actual uvx command args
   credentials: { source: "claude-json", claudeJsonPath: "~/.claude.json", mcpServerName: "workspace" },
   callTimeoutMs: 120_000,
   logLevel: "info",
@@ -342,7 +342,7 @@ runSetup()
 ```
 src/
   index.ts        CLI entry point, command dispatch, plist generator
-  daemon.ts       IPC server, call queue, workspace-mcp child management
+  daemon.ts       IPC server, call queue, coogle-mcp child management
   mcp-server.ts   MCP shim: tool discovery, tools/list, tools/call proxy
   ipc-client.ts   CoogleClient: per-call IPC socket transport
   config.ts       CoogleConfig type, loader, defaults, path helpers
@@ -368,13 +368,13 @@ The project deliberately keeps its dependency count minimal. There is no HTTP se
 
 ## Design decisions
 
-**Why a queue instead of concurrent calls to workspace-mcp?**
+**Why a queue instead of concurrent calls to coogle-mcp?**
 
-`workspace-mcp` runs as a stdio subprocess. The MCP protocol over stdio is request-response — the child cannot handle interleaved requests on the same pipe. Concurrent calls would corrupt the message stream. The queue makes the concurrency model explicit and safe.
+`coogle-mcp` runs as a stdio subprocess. The MCP protocol over stdio is request-response — the child cannot handle interleaved requests on the same pipe. Concurrent calls would corrupt the message stream. The queue makes the concurrency model explicit and safe.
 
 **Why fresh socket connections per IPC call?**
 
-Persistent connections require keepalive management, reconnect logic, and per-connection state. A fresh connect-send-receive-close per call is stateless and eliminates all of that. The overhead of a Unix socket connection is microseconds — negligible compared to a `workspace-mcp` tool call that may take several seconds.
+Persistent connections require keepalive management, reconnect logic, and per-connection state. A fresh connect-send-receive-close per call is stateless and eliminates all of that. The overhead of a Unix socket connection is microseconds — negligible compared to a `coogle-mcp` tool call that may take several seconds.
 
 **Why read the plist path from generate-plist instead of a static template?**
 
@@ -382,13 +382,13 @@ The plist must contain absolute paths to `node` and `dist/index.js` that are val
 
 **Why use the low-level MCP SDK Server in the shim?**
 
-The higher-level `McpServer` wraps `inputSchema` objects through a Zod-based schema system. `workspace-mcp` returns raw JSON Schema objects. Passing them through `McpServer` risks schema loss or validation errors. The low-level `Server` accepts arbitrary `inputSchema` values and forwards them unchanged to Claude.
+The higher-level `McpServer` wraps `inputSchema` objects through a Zod-based schema system. `coogle-mcp` returns raw JSON Schema objects. Passing them through `McpServer` risks schema loss or validation errors. The low-level `Server` accepts arbitrary `inputSchema` values and forwards them unchanged to Claude.
 
 ---
 
 ## stdout discipline
 
-The MCP JSON-RPC transport uses `process.stdout` (shim) and `process.stdin`/`process.stdout` (workspace-mcp child). Any non-JSON byte on these streams breaks the protocol silently — Claude sees no tools or gets parse errors with no obvious cause.
+The MCP JSON-RPC transport uses `process.stdout` (shim) and `process.stdin`/`process.stdout` (coogle-mcp child). Any non-JSON byte on these streams breaks the protocol silently — Claude sees no tools or gets parse errors with no obvious cause.
 
 Rules enforced throughout `mcp-server.ts`:
 - All debug output goes to `process.stderr`

@@ -9,7 +9,7 @@
  *   5. Returns results back to Claude
  *
  * Uses the low-level Server class (not McpServer) so we can return the exact
- * tool definitions from workspace-mcp without any JSON Schema conversion.
+ * tool definitions from coogle-mcp without any JSON Schema conversion.
  *
  * CRITICAL: stdout is the MCP JSON-RPC transport.
  *   - NEVER write non-JSON to stdout.
@@ -100,7 +100,7 @@ export async function runMcpServer(config: CoogleConfig): Promise<void> {
     }
   );
 
-  // tools/list — return exact tool definitions from workspace-mcp
+  // tools/list — return exact tool definitions from coogle-mcp
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
       tools: tools.map((t) => ({
@@ -130,7 +130,7 @@ export async function runMcpServer(config: CoogleConfig): Promise<void> {
     try {
       const result = await daemonClient.call(name, (args ?? {}) as Record<string, unknown>);
 
-      // The result from workspace-mcp is already a CallToolResult object
+      // The result from coogle-mcp is already a CallToolResult object
       // with { content: [...], isError?: boolean }. Return it directly.
       if (
         result !== null &&

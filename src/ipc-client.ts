@@ -68,7 +68,7 @@ export class CoogleClient {
   }
 
   /**
-   * List all tools available from the workspace-mcp child.
+   * List all tools available from the coogle-mcp child.
    * Calls the special "list_tools" IPC method on the daemon.
    */
   async listTools(): Promise<ToolDefinition[]> {
@@ -85,7 +85,7 @@ export class CoogleClient {
   }
 
   /**
-   * Restart the workspace-mcp child process.
+   * Restart the coogle-mcp child process.
    */
   async restartChild(): Promise<void> {
     await this.send("restart_child", {});
