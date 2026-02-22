@@ -6,9 +6,11 @@ Google Workspace MCP multiplexer for Claude Code. One persistent daemon holds th
 
 ## The problem it solves
 
-`workspace-mcp` is the MCP server that gives Claude access to Gmail, Calendar, Drive, Docs, Sheets, and the rest of Google Workspace. The naive setup — point Claude directly at `uvx workspace-mcp` — works fine for one session. The moment you open a second Claude Code window, both sessions try to own the same Google OAuth credentials. They fight, one wins, the other gets errors or stale tokens.
+Coogle is the MCP server that gives Claude access to Gmail, Calendar, Drive, Docs, Sheets, and the rest of Google Workspace — across multiple sessions simultaneously.
 
-Coogle fixes this with a daemon pattern: one process owns the `workspace-mcp` child and serializes all calls through a queue. Every Claude Code session runs a thin MCP shim that forwards tool calls to the daemon over a Unix Domain Socket. From Claude's perspective nothing changes — the same 142 tools are available. Under the hood, every call goes through a single, stable connection.
+The naive setup — pointing Claude directly at `uvx workspace-mcp` — works fine for one session. The moment you open a second Claude Code window, both sessions try to own the same Google OAuth credentials. They fight, one wins, the other gets errors or stale tokens.
+
+Coogle solves this with a daemon pattern: one persistent process holds the Google Workspace connection and serializes all calls through a queue. Every Claude Code session runs a thin MCP shim that forwards tool calls to the daemon over a Unix Domain Socket. From Claude's perspective nothing changes — 142 tools are available. Under the hood, every call goes through a single, stable connection.
 
 ```
 Claude Code (session 1)
