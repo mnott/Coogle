@@ -1,0 +1,534 @@
+/**
+ * daemon.ts — The persistent workspace-daemon
+ *
+ * Spawns a single `uvx workspace-mcp --tool-tier core` child process and
+ * multiplexes IPC requests from multiple MCP shim clients through it.
+ *
+ * Architecture:
+ *   MCP shims (Claude sessions) → Unix socket → daemon → workspace-mcp child
+ *
+ * IPC protocol: NDJSON over Unix Domain Socket (same pattern as Whazaa).
+ *
+ * Request  (shim → daemon):
+ *   { "id": "uuid", "method": "tool_name_or_special", "params": {} }
+ *
+ * Response (daemon → shim):
+ *   { "id": "uuid", "ok": true, "result": <any> }
+ *   { "id": "uuid", "ok": false, "error": "message" }
+ *
+ * Special methods:
+ *   list_tools    — List tools from workspace-mcp child
+ *   status        — Return daemon status
+ *   restart_child — Kill and respawn workspace-mcp child
+ *
+ * All other methods are forwarded as workspace-mcp tool calls.
+ */
+
+import { existsSync, unlinkSync, readFileSync } from "node:fs";
+import { createServer, Socket, Server } from "node:net";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+import { ToolDefinition } from "./ipc-client.js";
+import { WorkspaceDaemonConfig, expandHome, ensureConfigDir } from "./config.js";
+
+// ---------------------------------------------------------------------------
+// Protocol types
+// ---------------------------------------------------------------------------
+
+interface IpcRequest {
+  id: string;
+  method: string;
+  params: Record<string, unknown>;
+}
+
+interface IpcResponse {
+  id: string;
+  ok: boolean;
+  result?: unknown;
+  error?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Request queue (serializes concurrent calls to workspace-mcp)
+// ---------------------------------------------------------------------------
+
+interface QueuedCall {
+  method: string;
+  params: Record<string, unknown>;
+  resolve: (value: unknown) => void;
+  reject: (err: Error) => void;
+}
+
+// ---------------------------------------------------------------------------
+// Daemon state
+// ---------------------------------------------------------------------------
+
+let mcpClient: Client | null = null;
+let isConnected = false;
+let startTime = Date.now();
+
+const callQueue: QueuedCall[] = [];
+
+// Mutex: only one drain loop runs at a time
+let processingPromise: Promise<void> | null = null;
+
+// Respawn cooldown
+let lastRespawnAttempt = 0;
+const RESPAWN_COOLDOWN_MS = 3_000;
+
+// Config reference (set by serve())
+let daemonConfig: WorkspaceDaemonConfig;
+
+// ---------------------------------------------------------------------------
+// Credentials helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Load Google OAuth credentials based on the configured source.
+ * Returns an env record to merge into the child environment.
+ */
+function loadCredentials(): Record<string, string> {
+  const creds = daemonConfig.credentials;
+
+  if (creds.source === "env") {
+    const clientId = process.env["GOOGLE_OAUTH_CLIENT_ID"];
+    const clientSecret = process.env["GOOGLE_OAUTH_CLIENT_SECRET"];
+    if (clientId || clientSecret) {
+      process.stderr.write("[workspace-daemon] Loaded credentials from env vars.\n");
+    }
+    const result: Record<string, string> = {};
+    if (clientId) result["GOOGLE_OAUTH_CLIENT_ID"] = clientId;
+    if (clientSecret) result["GOOGLE_OAUTH_CLIENT_SECRET"] = clientSecret;
+    return result;
+  }
+
+  if (creds.source === "manual") {
+    const result: Record<string, string> = {};
+    if (creds.clientId) result["GOOGLE_OAUTH_CLIENT_ID"] = creds.clientId;
+    if (creds.clientSecret) result["GOOGLE_OAUTH_CLIENT_SECRET"] = creds.clientSecret;
+    if (Object.keys(result).length > 0) {
+      process.stderr.write("[workspace-daemon] Loaded credentials from config (manual).\n");
+    }
+    return result;
+  }
+
+  // Default: claude-json
+  return loadCredentialsFromClaudeJson();
+}
+
+/**
+ * Read Google OAuth credentials from ~/.claude.json (or configured path).
+ * Falls back gracefully if the file is missing or malformed.
+ */
+function loadCredentialsFromClaudeJson(): Record<string, string> {
+  const rawPath = daemonConfig.credentials.claudeJsonPath ?? "~/.claude.json";
+  const claudeJsonPath = expandHome(rawPath);
+  const serverKey = daemonConfig.credentials.mcpServerName ?? "workspace";
+
+  try {
+    const raw = readFileSync(claudeJsonPath, "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const mcpServers = parsed["mcpServers"] as Record<string, unknown> | undefined;
+    const workspace = mcpServers?.[serverKey] as Record<string, unknown> | undefined;
+    const env = workspace?.["env"] as Record<string, string> | undefined;
+    if (env && typeof env === "object") {
+      const result: Record<string, string> = {};
+      for (const [k, v] of Object.entries(env)) {
+        if (typeof v === "string") result[k] = v;
+      }
+      process.stderr.write(
+        `[workspace-daemon] Loaded credentials from ${claudeJsonPath} (keys: ${Object.keys(result).join(", ")})\n`
+      );
+      return result;
+    }
+  } catch (err) {
+    process.stderr.write(
+      `[workspace-daemon] Could not read credentials from ${claudeJsonPath}: ${err}\n`
+    );
+  }
+  return {};
+}
+
+// ---------------------------------------------------------------------------
+// workspace-mcp child management
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the MCP command to an absolute path if possible.
+ * If it's a bare command name (no path separator), look it up via PATH.
+ */
+export function resolveMcpCommand(command: string): string {
+  if (command.includes("/")) {
+    // Already an absolute or relative path — use as-is
+    return command;
+  }
+  // Search PATH for the command
+  const pathDirs = (process.env["PATH"] ?? "").split(":");
+  for (const dir of pathDirs) {
+    const full = join(dir, command);
+    if (existsSync(full)) {
+      return full;
+    }
+  }
+  // Not found — return bare name and let the OS handle the error
+  return command;
+}
+
+/**
+ * Spawn the workspace-mcp child via StdioClientTransport only.
+ * Credentials are loaded based on config and merged into the child env.
+ */
+async function spawnChild(): Promise<void> {
+  process.stderr.write("[workspace-daemon] Spawning workspace-mcp child...\n");
+
+  // Disconnect and clear any existing client first
+  if (mcpClient) {
+    try {
+      await mcpClient.close();
+    } catch {
+      // ignore
+    }
+    mcpClient = null;
+    isConnected = false;
+  }
+
+  // Build child environment: our process env + credentials
+  const childEnv: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined) childEnv[k] = v;
+  }
+  const creds = loadCredentials();
+  Object.assign(childEnv, creds);
+
+  const command = resolveMcpCommand(daemonConfig.mcp.command);
+  const args = daemonConfig.mcp.args;
+
+  process.stderr.write(`[workspace-daemon] Running: ${command} ${args.join(" ")}\n`);
+
+  const transport = new StdioClientTransport({
+    command,
+    args,
+    env: childEnv,
+  });
+
+  const client = new Client(
+    { name: "workspace-daemon", version: "0.1.0" },
+    { capabilities: {} }
+  );
+
+  mcpClient = client;
+
+  try {
+    await client.connect(transport);
+    isConnected = true;
+    process.stderr.write("[workspace-daemon] Connected to workspace-mcp child.\n");
+
+    // Watch for transport close — mark disconnected for auto-respawn
+    transport.onclose = () => {
+      process.stderr.write("[workspace-daemon] Transport closed.\n");
+      isConnected = false;
+      mcpClient = null;
+      drainQueueWithError(new Error("workspace-mcp transport closed"));
+    };
+
+    transport.onerror = (err) => {
+      process.stderr.write(`[workspace-daemon] Transport error: ${err.message}\n`);
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[workspace-daemon] Failed to connect to child: ${msg}\n`);
+    isConnected = false;
+    mcpClient = null;
+    throw new Error(`Failed to connect to workspace-mcp: ${msg}`);
+  }
+}
+
+/**
+ * Drain the queue by rejecting all pending calls with an error.
+ * Called when the child dies unexpectedly.
+ */
+function drainQueueWithError(err: Error): void {
+  processingPromise = null;
+  const pending = callQueue.splice(0);
+  for (const call of pending) {
+    call.reject(err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Queue drain loop with mutex and auto-respawn
+// ---------------------------------------------------------------------------
+
+/**
+ * Drain all queued calls in order. Called by enqueueAndProcess.
+ * Includes per-call timeout and auto-respawn on disconnect.
+ */
+async function drainQueue(): Promise<void> {
+  while (callQueue.length > 0) {
+    // Auto-respawn if child crashed
+    if (!isConnected || !mcpClient) {
+      const now = Date.now();
+      if (now - lastRespawnAttempt < RESPAWN_COOLDOWN_MS) {
+        process.stderr.write(
+          `[workspace-daemon] Respawn on cooldown (${RESPAWN_COOLDOWN_MS}ms). Rejecting queued call.\n`
+        );
+        const item = callQueue.shift()!;
+        item.reject(new Error("workspace-mcp child is not connected (respawn on cooldown)"));
+        continue;
+      }
+      lastRespawnAttempt = now;
+      process.stderr.write("[workspace-daemon] Child disconnected — attempting respawn...\n");
+      try {
+        await spawnChild();
+        process.stderr.write("[workspace-daemon] Respawn succeeded.\n");
+      } catch (respawnErr) {
+        const msg = respawnErr instanceof Error ? respawnErr.message : String(respawnErr);
+        process.stderr.write(`[workspace-daemon] Respawn failed: ${msg}\n`);
+        const item = callQueue.shift()!;
+        item.reject(new Error(`workspace-mcp respawn failed: ${msg}`));
+        continue;
+      }
+    }
+
+    const item = callQueue.shift()!;
+    const timeoutMs = daemonConfig.callTimeoutMs;
+
+    try {
+      const result = await Promise.race([
+        mcpClient!.callTool({ name: item.method, arguments: item.params }),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`Tool call timed out after ${timeoutMs / 1000}s`)),
+            timeoutMs
+          )
+        ),
+      ]);
+      item.resolve(result);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      item.reject(new Error(msg));
+    }
+  }
+}
+
+/**
+ * Enqueue a tool call and ensure the drain loop is running (mutex).
+ */
+function enqueueAndProcess(item: QueuedCall): void {
+  callQueue.push(item);
+  if (!processingPromise) {
+    processingPromise = drainQueue().finally(() => {
+      processingPromise = null;
+    });
+  }
+}
+
+/**
+ * Enqueue a tool call and return a promise that resolves with the result.
+ */
+function enqueueCall(
+  method: string,
+  params: Record<string, unknown>
+): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    enqueueAndProcess({ method, params, resolve, reject });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// IPC server
+// ---------------------------------------------------------------------------
+
+function sendResponse(socket: Socket, response: IpcResponse): void {
+  try {
+    socket.write(JSON.stringify(response) + "\n");
+  } catch {
+    // Socket may already be closed
+  }
+}
+
+/**
+ * Handle a single IPC request.
+ */
+async function handleRequest(request: IpcRequest, socket: Socket): Promise<void> {
+  const { id, method, params } = request;
+
+  if (method === "status") {
+    sendResponse(socket, {
+      id,
+      ok: true,
+      result: {
+        connected: isConnected,
+        queueLength: callQueue.length,
+        uptime: Math.floor((Date.now() - startTime) / 1000),
+        childRunning: mcpClient !== null,
+      },
+    });
+    socket.end();
+    return;
+  }
+
+  if (method === "list_tools") {
+    if (!mcpClient || !isConnected) {
+      sendResponse(socket, {
+        id,
+        ok: false,
+        error: "workspace-mcp child is not connected",
+      });
+      socket.end();
+      return;
+    }
+
+    try {
+      const toolsResult = await mcpClient.listTools();
+      const tools: ToolDefinition[] = toolsResult.tools.map((t) => ({
+        name: t.name,
+        description: t.description ?? "",
+        inputSchema: t.inputSchema as Record<string, unknown>,
+      }));
+      sendResponse(socket, { id, ok: true, result: tools });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      sendResponse(socket, { id, ok: false, error: msg });
+    }
+    socket.end();
+    return;
+  }
+
+  if (method === "restart_child") {
+    try {
+      await spawnChild();
+      sendResponse(socket, { id, ok: true, result: { restarted: true } });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      sendResponse(socket, { id, ok: false, error: msg });
+    }
+    socket.end();
+    return;
+  }
+
+  // All other methods are workspace tool calls
+  try {
+    const result = await enqueueCall(method, params);
+    sendResponse(socket, { id, ok: true, result });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    sendResponse(socket, { id, ok: false, error: msg });
+  }
+  socket.end();
+}
+
+/**
+ * Start the Unix Domain Socket IPC server.
+ */
+function startIpcServer(socketPath: string): Server {
+  // Remove stale socket file from a previous run
+  if (existsSync(socketPath)) {
+    try {
+      unlinkSync(socketPath);
+      process.stderr.write("[workspace-daemon] Removed stale socket file.\n");
+    } catch {
+      // If we can't remove it, bind will fail with a clear error
+    }
+  }
+
+  const server = createServer((socket: Socket) => {
+    let buffer = "";
+
+    socket.on("data", (chunk: Buffer) => {
+      buffer += chunk.toString();
+      const nl = buffer.indexOf("\n");
+      if (nl === -1) return;
+
+      const line = buffer.slice(0, nl);
+      buffer = buffer.slice(nl + 1);
+
+      let request: IpcRequest;
+      try {
+        request = JSON.parse(line) as IpcRequest;
+      } catch {
+        sendResponse(socket, { id: "?", ok: false, error: "Invalid JSON" });
+        socket.destroy();
+        return;
+      }
+
+      handleRequest(request, socket).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        sendResponse(socket, { id: request.id, ok: false, error: msg });
+        socket.destroy();
+      });
+    });
+
+    socket.on("error", () => {
+      // Client disconnected — nothing to do
+    });
+  });
+
+  server.on("error", (err) => {
+    process.stderr.write(`[workspace-daemon] IPC server error: ${err}\n`);
+  });
+
+  server.listen(socketPath, () => {
+    process.stderr.write(
+      `[workspace-daemon] IPC server listening on ${socketPath}\n`
+    );
+  });
+
+  return server;
+}
+
+// ---------------------------------------------------------------------------
+// Main daemon entry point
+// ---------------------------------------------------------------------------
+
+export async function serve(config: WorkspaceDaemonConfig): Promise<void> {
+  daemonConfig = config;
+  startTime = Date.now();
+
+  // Ensure config directory and default config exist
+  ensureConfigDir();
+
+  process.stderr.write("[workspace-daemon] Starting daemon...\n");
+  process.stderr.write(
+    `[workspace-daemon] Socket: ${config.socketPath}\n`
+  );
+
+  try {
+    await spawnChild();
+  } catch (err) {
+    process.stderr.write(
+      `[workspace-daemon] WARNING: Could not connect to workspace-mcp at startup: ${err}\n`
+    );
+    process.stderr.write(
+      "[workspace-daemon] Will retry on first IPC call. Continuing...\n"
+    );
+  }
+
+  const server = startIpcServer(config.socketPath);
+
+  const shutdown = (signal: string): void => {
+    process.stderr.write(`\n[workspace-daemon] ${signal} received. Stopping.\n`);
+
+    server.close();
+    try {
+      unlinkSync(config.socketPath);
+    } catch {
+      // ignore
+    }
+
+    if (mcpClient) {
+      mcpClient.close().catch(() => {});
+    }
+
+    process.exit(0);
+  };
+
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+  // Keep process alive
+  await new Promise(() => {});
+}

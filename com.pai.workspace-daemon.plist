@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  TEMPLATE ONLY — Do not use this file directly.
+
+  Generate the actual plist for your system:
+
+    node dist/index.js generate-plist > ~/Library/LaunchAgents/com.pai.workspace-daemon.plist
+
+  Then load it:
+
+    launchctl load ~/Library/LaunchAgents/com.pai.workspace-daemon.plist
+
+  To unload:
+
+    launchctl unload ~/Library/LaunchAgents/com.pai.workspace-daemon.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.pai.workspace-daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <!-- Replace with the output of: node dist/index.js generate-plist -->
+    <string>/path/to/node</string>
+    <string>/path/to/workspace-daemon/dist/index.js</string>
+    <string>serve</string>
+  </array>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/workspace-daemon.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/workspace-daemon.log</string>
+  <key>ThrottleInterval</key>
+  <integer>3</integer>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/YOUR_USERNAME</string>
+  </dict>
+</dict>
+</plist>
