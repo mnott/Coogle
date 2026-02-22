@@ -736,10 +736,34 @@ async function stepUpdateClaudeConfig(indexJsPath: string): Promise<boolean> {
     return false;
   }
 
-  // Backup
+  // Backup — but never overwrite a backup that has Google OAuth creds with one that doesn't
   try {
-    copyFileSync(claudeJsonPath, backupPath);
-    ok(`Backup saved: ${cyan(backupPath)}`);
+    let shouldBackup = true;
+    if (existsSync(backupPath)) {
+      const existingBackup = JSON.parse(readFileSync(backupPath, "utf-8")) as Record<string, unknown>;
+      const backupServers = existingBackup["mcpServers"] as Record<string, unknown> | undefined;
+      const backupHasCreds = Object.values(backupServers ?? {}).some((s) => {
+        const env = (s as Record<string, unknown>)?.["env"] as Record<string, string> | undefined;
+        return !!env?.["GOOGLE_OAUTH_CLIENT_ID"];
+      });
+
+      if (backupHasCreds) {
+        // Check if current claude.json also has creds
+        const currentHasCreds = Object.values(mcpServers ?? {}).some((s) => {
+          const env = (s as Record<string, unknown>)?.["env"] as Record<string, string> | undefined;
+          return !!env?.["GOOGLE_OAUTH_CLIENT_ID"];
+        });
+        if (!currentHasCreds) {
+          info("Existing backup has Google OAuth credentials — preserving it");
+          shouldBackup = false;
+        }
+      }
+    }
+
+    if (shouldBackup) {
+      copyFileSync(claudeJsonPath, backupPath);
+      ok(`Backup saved: ${cyan(backupPath)}`);
+    }
   } catch (err) {
     throw new Error(`Failed to backup ~/.claude.json: ${err}`);
   }
