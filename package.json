@@ -1,5 +1,5 @@
 {
-  "name": "coogle",
+  "name": "@mnott/coogle",
   "version": "0.2.0",
   "description": "Coogle — Google Workspace MCP multiplexer for Claude Code. One persistent daemon, no credential conflicts across multiple sessions.",
   "type": "module",
