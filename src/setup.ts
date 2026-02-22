@@ -216,44 +216,80 @@ async function stepCredentials(): Promise<CredentialInfo> {
   header("Step 2: Google OAuth Credentials");
 
   const claudeJsonPath = join(homedir(), ".claude.json");
+  const claudeJsonBackupPath = join(homedir(), ".claude.json.backup");
+  const configFilePath = join(homedir(), ".config", "coogle", "config.json");
 
-  // Try to read from ~/.claude.json first
+  // Helper: scan an mcpServers object for Google OAuth env vars
+  function findCredsInMcpServers(
+    mcpServers: Record<string, unknown> | undefined,
+    label: string
+  ): CredentialInfo | null {
+    for (const [serverName, serverConfig] of Object.entries(mcpServers ?? {})) {
+      const srvCfg = serverConfig as Record<string, unknown>;
+      const env = srvCfg["env"] as Record<string, string> | undefined;
+      if (!env) continue;
+      const clientId = env["GOOGLE_OAUTH_CLIENT_ID"];
+      const clientSecret = env["GOOGLE_OAUTH_CLIENT_SECRET"];
+      if (clientId && clientSecret) {
+        ok(`Found credentials in ${cyan(label)} (server: "${serverName}")`);
+        info(`Client ID:     ${cyan(maskSecret(clientId))}`);
+        info(`Client Secret: ${cyan(maskSecret(clientSecret))}`);
+        return { source: "claude-json", clientId, clientSecret, claudeJsonMcpServerName: serverName };
+      }
+    }
+    return null;
+  }
+
+  // Source 1: Existing coogle config with manual credentials
+  if (existsSync(configFilePath)) {
+    try {
+      const raw = readFileSync(configFilePath, "utf-8");
+      const cfg = JSON.parse(raw) as Record<string, unknown>;
+      const creds = cfg["credentials"] as Record<string, unknown> | undefined;
+      if (creds?.["source"] === "manual" && creds["clientId"] && creds["clientSecret"]) {
+        const clientId = creds["clientId"] as string;
+        const clientSecret = creds["clientSecret"] as string;
+        ok(`Found credentials in existing config ${cyan("~/.config/coogle/config.json")}`);
+        info(`Client ID:     ${cyan(maskSecret(clientId))}`);
+        info(`Client Secret: ${cyan(maskSecret(clientSecret))}`);
+        return { source: "manual", clientId, clientSecret };
+      }
+    } catch {
+      // ignore — try other sources
+    }
+  }
+
+  // Source 2: ~/.claude.json (any server with Google OAuth env vars)
   if (existsSync(claudeJsonPath)) {
     try {
       const raw = readFileSync(claudeJsonPath, "utf-8");
       const parsed = JSON.parse(raw) as Record<string, unknown>;
-      const mcpServers = parsed["mcpServers"] as Record<string, unknown> | undefined;
-
-      // Look for a server with Google OAuth env vars
-      for (const [serverName, serverConfig] of Object.entries(mcpServers ?? {})) {
-        const srvCfg = serverConfig as Record<string, unknown>;
-        const env = srvCfg["env"] as Record<string, string> | undefined;
-        if (!env) continue;
-
-        const clientId = env["GOOGLE_OAUTH_CLIENT_ID"];
-        const clientSecret = env["GOOGLE_OAUTH_CLIENT_SECRET"];
-
-        if (clientId && clientSecret) {
-          ok(`Found credentials in ${cyan("~/.claude.json")} (server: "${serverName}")`);
-          info(`Client ID:     ${cyan(maskSecret(clientId))}`);
-          info(`Client Secret: ${cyan(maskSecret(clientSecret))}`);
-
-          return {
-            source: "claude-json",
-            clientId,
-            clientSecret,
-            claudeJsonMcpServerName: serverName,
-          };
-        }
-      }
-
-      warn(`~/.claude.json exists but no coogle server with Google OAuth env vars found`);
+      const result = findCredsInMcpServers(
+        parsed["mcpServers"] as Record<string, unknown> | undefined,
+        "~/.claude.json"
+      );
+      if (result) return result;
     } catch (err) {
       warn(`Could not parse ~/.claude.json: ${err}`);
     }
-  } else {
-    warn("~/.claude.json not found");
   }
+
+  // Source 3: ~/.claude.json.backup (original creds before first coogle setup)
+  if (existsSync(claudeJsonBackupPath)) {
+    try {
+      const raw = readFileSync(claudeJsonBackupPath, "utf-8");
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const result = findCredsInMcpServers(
+        parsed["mcpServers"] as Record<string, unknown> | undefined,
+        "~/.claude.json.backup"
+      );
+      if (result) return result;
+    } catch {
+      // ignore
+    }
+  }
+
+  warn("No existing Google OAuth credentials found");
 
   // Fall through to manual entry
   info("Please provide Google OAuth credentials manually.");
@@ -653,7 +689,7 @@ async function stepUpdateClaudeConfig(indexJsPath: string): Promise<boolean> {
         (srvCfg["env"] as Record<string, string> | undefined)?.[
           "GOOGLE_OAUTH_CLIENT_ID"
         ];
-      if (hasGoogleCreds || serverName === "coogle") {
+      if (hasGoogleCreds || serverName === "coogle" || serverName === "workspace") {
         const currentCmd = srvCfg["command"] as string | undefined;
         const currentArgs = (srvCfg["args"] as string[] | undefined) ?? [];
         info(`Server name: ${cyan(serverName)}`);
@@ -686,41 +722,50 @@ async function stepUpdateClaudeConfig(indexJsPath: string): Promise<boolean> {
     throw new Error(`Failed to backup ~/.claude.json: ${err}`);
   }
 
-  // Find the coogle server key (first one with Google creds, or "coogle")
+  // Find the server key to update: "coogle", or "workspace" (legacy), or first with Google creds
   let targetServerName: string | null = null;
   if (mcpServers) {
-    for (const [serverName, serverConfig] of Object.entries(mcpServers)) {
-      const srvCfg = serverConfig as Record<string, unknown>;
-      const env = srvCfg["env"] as Record<string, string> | undefined;
-      if (env?.["GOOGLE_OAUTH_CLIENT_ID"]) {
-        targetServerName = serverName;
-        break;
-      }
-    }
-    // Fallback: use "coogle" if it exists
-    if (!targetServerName && mcpServers["coogle"]) {
+    // Priority 1: existing "coogle" key
+    if (mcpServers["coogle"]) {
       targetServerName = "coogle";
     }
-    // Last resort: use first key
+    // Priority 2: legacy "workspace" key (will be renamed to "coogle")
+    if (!targetServerName && mcpServers["workspace"]) {
+      targetServerName = "workspace";
+    }
+    // Priority 3: any server with Google OAuth creds
     if (!targetServerName) {
-      const keys = Object.keys(mcpServers);
-      if (keys.length > 0) targetServerName = keys[0];
+      for (const [serverName, serverConfig] of Object.entries(mcpServers)) {
+        const srvCfg = serverConfig as Record<string, unknown>;
+        const env = srvCfg["env"] as Record<string, string> | undefined;
+        if (env?.["GOOGLE_OAUTH_CLIENT_ID"]) {
+          targetServerName = serverName;
+          break;
+        }
+      }
     }
   }
 
   if (!targetServerName) {
-    warn("No suitable mcpServers entry found — cannot update Claude config");
-    return false;
+    warn("No suitable mcpServers entry found — creating new 'coogle' entry");
+    targetServerName = "coogle";
   }
 
-  // Update the server config to use the coogle shim
-  const newServersBlock = {
-    ...(mcpServers ?? {}),
-    [targetServerName]: {
-      type: "stdio",
-      command: "node",
-      args: [indexJsPath, "mcp"],
-    },
+  // Build the new servers block
+  const newServersBlock = { ...(mcpServers ?? {}) };
+
+  // If migrating from "workspace" key, remove the old key and use "coogle"
+  if (targetServerName === "workspace") {
+    info(`Migrating server key: ${cyan('"workspace"')} → ${cyan('"coogle"')}`);
+    delete newServersBlock["workspace"];
+    targetServerName = "coogle";
+  }
+
+  // Set the coogle shim entry
+  newServersBlock[targetServerName] = {
+    type: "stdio",
+    command: "node",
+    args: [indexJsPath, "mcp"],
   };
 
   parsed["mcpServers"] = newServersBlock;

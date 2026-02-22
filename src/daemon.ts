@@ -126,29 +126,51 @@ function loadCredentials(): Record<string, string> {
 function loadCredentialsFromClaudeJson(): Record<string, string> {
   const rawPath = daemonConfig.credentials.claudeJsonPath ?? "~/.claude.json";
   const claudeJsonPath = expandHome(rawPath);
+  const backupPath = claudeJsonPath + ".backup";
   const serverKey = daemonConfig.credentials.mcpServerName ?? "coogle";
 
-  try {
-    const raw = readFileSync(claudeJsonPath, "utf-8");
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const mcpServers = parsed["mcpServers"] as Record<string, unknown> | undefined;
-    const serverEntry = mcpServers?.[serverKey] as Record<string, unknown> | undefined;
-    const env = serverEntry?.["env"] as Record<string, string> | undefined;
-    if (env && typeof env === "object") {
-      const result: Record<string, string> = {};
-      for (const [k, v] of Object.entries(env)) {
-        if (typeof v === "string") result[k] = v;
+  // Try to extract creds from a parsed claude.json structure
+  function extractCreds(filePath: string): Record<string, string> | null {
+    try {
+      const raw = readFileSync(filePath, "utf-8");
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const mcpServers = parsed["mcpServers"] as Record<string, unknown> | undefined;
+
+      // Try configured key first, then legacy "workspace" key, then any server with Google creds
+      const keysToTry = [serverKey];
+      if (serverKey !== "workspace") keysToTry.push("workspace");
+
+      for (const key of keysToTry) {
+        const entry = mcpServers?.[key] as Record<string, unknown> | undefined;
+        const env = entry?.["env"] as Record<string, string> | undefined;
+        if (env && typeof env === "object" && env["GOOGLE_OAUTH_CLIENT_ID"]) {
+          const result: Record<string, string> = {};
+          for (const [k, v] of Object.entries(env)) {
+            if (typeof v === "string") result[k] = v;
+          }
+          process.stderr.write(
+            `[coogle] Loaded credentials from ${filePath} (server: "${key}", keys: ${Object.keys(result).join(", ")})\n`
+          );
+          return result;
+        }
       }
-      process.stderr.write(
-        `[coogle] Loaded credentials from ${claudeJsonPath} (keys: ${Object.keys(result).join(", ")})\n`
-      );
-      return result;
+    } catch {
+      // ignore — try next source
     }
-  } catch (err) {
-    process.stderr.write(
-      `[coogle] Could not read credentials from ${claudeJsonPath}: ${err}\n`
-    );
+    return null;
   }
+
+  // Source 1: main claude.json
+  const fromMain = extractCreds(claudeJsonPath);
+  if (fromMain) return fromMain;
+
+  // Source 2: backup (original creds before coogle setup stripped env vars)
+  const fromBackup = extractCreds(backupPath);
+  if (fromBackup) return fromBackup;
+
+  process.stderr.write(
+    `[coogle] No Google OAuth credentials found in ${claudeJsonPath} or ${backupPath}\n`
+  );
   return {};
 }
 
