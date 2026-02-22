@@ -1,14 +1,45 @@
 {
   "name": "coogle",
   "version": "0.1.0",
-  "description": "Coogle — Google Workspace MCP multiplexer for Claude",
+  "description": "Coogle — Google Workspace MCP multiplexer for Claude Code. One persistent daemon, no credential conflicts across multiple sessions.",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "coogle": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/index.js serve",
-    "mcp": "node dist/index.js mcp"
+    "mcp": "node dist/index.js mcp",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "google-workspace",
+    "claude",
+    "claude-code",
+    "mcp-server",
+    "gmail",
+    "google-drive",
+    "google-calendar",
+    "workspace-mcp",
+    "daemon",
+    "multiplexer"
+  ],
+  "license": "MIT",
+  "author": "Matthias Nott",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mnott/Coogle.git"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "latest",
