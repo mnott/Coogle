@@ -164,6 +164,70 @@ Config lives at `~/.config/coogle/config.json`. It is created automatically by `
 
 ---
 
+## Multi-account (Google Workspace)
+
+Coogle supports managing multiple Google accounts simultaneously. Each account needs a one-time OAuth authorization, after which all 142 tools work for any authorized account — just pass the appropriate `user_google_email` parameter.
+
+### How it works
+
+OAuth tokens are stored per user in `~/.google_workspace_mcp/credentials/`:
+
+```
+~/.google_workspace_mcp/credentials/
+├── alice@example.com.json
+├── bob@example.com.json
+└── carol@example.com.json
+```
+
+The OAuth Client ID and Client Secret (app credentials) are shared across all accounts — they come from your Google Cloud project. Each user gets their own refresh token after completing the consent flow once.
+
+### Adding a new account
+
+1. **Ensure credentials are configured.** The daemon needs the OAuth Client ID and Client Secret. The recommended approach is `manual` source in `~/.config/coogle/config.json`:
+
+```json
+{
+  "credentials": {
+    "source": "manual",
+    "clientId": "your-client-id.apps.googleusercontent.com",
+    "clientSecret": "GOCSPX-your-client-secret"
+  }
+}
+```
+
+You can find these values in an existing token file at `~/.google_workspace_mcp/credentials/<email>.json` (fields `client_id` and `client_secret`) or in your Google Cloud Console.
+
+2. **Restart the daemon** so it picks up the credentials:
+
+```bash
+# Kill the daemon (launchd auto-restarts it)
+launchctl kickstart -k gui/$(id -u)/com.pai.coogle
+```
+
+3. **Trigger the OAuth flow** for the new account. From Claude Code, call:
+
+```
+start_google_auth(service_name="people", user_google_email="newuser@example.com")
+```
+
+Or call any tool with the new email — `workspace-mcp` will return an authorization URL if no token exists.
+
+4. **Open the authorization URL** in a browser, sign in as the target account, and approve the permissions. The callback goes to `localhost:8000` (the OAuth server built into `workspace-mcp`).
+
+5. **Done.** A token file is saved to `~/.google_workspace_mcp/credentials/newuser@example.com.json`. All subsequent tool calls with that email work immediately.
+
+### Google Workspace family/team domains
+
+If all accounts are on the same Google Workspace domain (e.g. `@example.com`) and you are the domain admin, you can authorize all accounts yourself — just sign in as each user in the browser when the consent screen appears. No need for each person to do it themselves.
+
+### Important notes
+
+- **Calendar sharing vs. Contacts:** Google Calendar supports delegation — you can access shared calendars with just one account's token. Google Contacts has no sharing model. Each account must be individually authorized to manage its contacts.
+- **Token refresh:** Tokens are long-lived (refresh tokens). They only expire if the user revokes access or the OAuth app credentials change.
+- **Port 8000:** The `workspace-mcp` OAuth callback server listens on `localhost:8000`. If this port is occupied when you trigger an auth flow, restart the daemon first.
+
+---
+
 ## Manual Claude Code configuration
 
 If you prefer not to use the setup wizard, edit `~/.claude.json` directly. Find the `coogle` entry under `mcpServers` and replace its `command`/`args` with the coogle shim:
