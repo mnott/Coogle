@@ -1,6 +1,6 @@
 {
   "name": "@tekmidian/coogle",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "description": "Coogle — Google Workspace MCP multiplexer for Claude Code. One persistent daemon, no credential conflicts across multiple sessions.",
   "type": "module",
   "main": "dist/index.js",
