@@ -22,23 +22,29 @@ Claude Code (session 3)
 
 ## Quick start
 
+Tell Claude Code:
+
+> Clone https://github.com/mnott/Coogle and set it up for me
+
+Claude clones the repo, finds the setup skill, and handles everything autonomously — prerequisites, build, config, daemon install, and Google OAuth. You just approve the permissions in your browser when prompted.
+
+### Alternative: npx
+
+If you prefer a traditional install without cloning:
+
+```bash
+npx -y @tekmidian/coogle setup
+```
+
+The wizard handles everything: environment check, credentials, config, daemon install, launchd service, and Claude config patching.
+
 ### Prerequisites
 
 - Node.js >= 18
 - `uvx` (from [uv](https://github.com/astral-sh/uv)): `brew install uv` or `pip install uv`
 - Google OAuth credentials (Client ID + Client Secret from Google Cloud Console)
 
-### Install and set up
-
-The fastest path — run the interactive setup wizard directly with npx:
-
-```bash
-npx -y @tekmidian/coogle setup
-```
-
-That's it. The wizard handles everything: environment check, credentials, config, daemon install, launchd service, and Claude config patching.
-
-**Prefer to clone and build locally?**
+### Manual clone and build
 
 ```bash
 git clone https://github.com/mnott/Coogle ~/dev/apps/coogle
