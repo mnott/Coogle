@@ -38,6 +38,9 @@ export interface CoogleConfig {
 
   /** Log level */
   logLevel: "debug" | "info" | "warn" | "error";
+
+  /** Default Google account email (used when tool call omits user_google_email) */
+  defaultAccount?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -72,7 +75,8 @@ const CONFIG_TEMPLATE = `{
     "mcpServerName": "coogle"
   },
   "callTimeoutMs": 120000,
-  "logLevel": "info"
+  "logLevel": "info",
+  "defaultAccount": ""
 }
 `;
 

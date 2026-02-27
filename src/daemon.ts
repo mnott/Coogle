@@ -24,12 +24,12 @@
  * All other methods are forwarded as coogle-mcp tool calls.
  */
 
-import { existsSync, unlinkSync, readFileSync } from "node:fs";
+import { existsSync, unlinkSync, readFileSync, readdirSync } from "node:fs";
 import { createServer, Socket, Server } from "node:net";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 
 import { ToolDefinition } from "./ipc-client.js";
 import { CoogleConfig, expandHome, ensureConfigDir } from "./config.js";
@@ -81,6 +81,33 @@ const RESPAWN_COOLDOWN_MS = 3_000;
 
 // Config reference (set by serve())
 let daemonConfig: CoogleConfig;
+
+// Authorized accounts (scanned from credential files)
+let authorizedAccounts: string[] = [];
+
+// Cached tool definitions (populated on first list_tools call)
+let knownTools: Map<string, ToolDefinition> = new Map();
+
+// ---------------------------------------------------------------------------
+// Account scanning
+// ---------------------------------------------------------------------------
+
+/**
+ * Scan ~/.google_workspace_mcp/credentials/ for authorized Google accounts.
+ * Each .json file is named after the email address (e.g. mnott@mnott.de.json).
+ */
+function loadAuthorizedAccounts(): string[] {
+  const credDir = join(homedir(), ".google_workspace_mcp", "credentials");
+  try {
+    const files = readdirSync(credDir);
+    return files
+      .filter((f) => f.endsWith(".json"))
+      .map((f) => basename(f, ".json"))
+      .sort();
+  } catch {
+    return [];
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Credentials helper
@@ -405,12 +432,47 @@ async function handleRequest(request: IpcRequest, socket: Socket): Promise<void>
     }
 
     try {
+      // Refresh authorized accounts on every list_tools call
+      authorizedAccounts = loadAuthorizedAccounts();
+      const defaultAcct = daemonConfig.defaultAccount || "";
+      const accountList = authorizedAccounts.join(", ");
+
       const toolsResult = await mcpClient.listTools();
-      const tools: ToolDefinition[] = toolsResult.tools.map((t) => ({
-        name: t.name,
-        description: t.description ?? "",
-        inputSchema: t.inputSchema as Record<string, unknown>,
-      }));
+      const tools: ToolDefinition[] = toolsResult.tools.map((t) => {
+        const schema = t.inputSchema as Record<string, unknown>;
+        const required = (schema.required ?? []) as string[];
+        const properties = (schema.properties ?? {}) as Record<string, Record<string, unknown>>;
+        let description = t.description ?? "";
+
+        // Enrich tools that require user_google_email
+        if (required.includes("user_google_email") && authorizedAccounts.length > 0) {
+          const suffix = defaultAcct
+            ? `\n\nAuthorized Google accounts: ${accountList}. Default: ${defaultAcct}`
+            : `\n\nAuthorized Google accounts: ${accountList}.`;
+          description += suffix;
+
+          // Also enrich the property description in the schema
+          if (properties["user_google_email"]) {
+            const propDesc = defaultAcct
+              ? `Google account email. Authorized: ${accountList}. Default: ${defaultAcct}`
+              : `Google account email. Authorized: ${accountList}.`;
+            properties["user_google_email"] = {
+              ...properties["user_google_email"],
+              description: propDesc,
+            };
+          }
+        }
+
+        return {
+          name: t.name,
+          description,
+          inputSchema: { ...schema, properties },
+        };
+      });
+
+      // Cache tool definitions for validation
+      knownTools = new Map(tools.map((t) => [t.name, t]));
+
       sendResponse(socket, { id, ok: true, result: tools });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -432,7 +494,43 @@ async function handleRequest(request: IpcRequest, socket: Socket): Promise<void>
     return;
   }
 
-  // All other methods are coogle-mcp tool calls
+  // All other methods are coogle-mcp tool calls.
+  // Validate user_google_email if the tool requires it.
+  const toolDef = knownTools.get(method);
+  if (toolDef) {
+    const required = ((toolDef.inputSchema.required ?? []) as string[]);
+    if (required.includes("user_google_email")) {
+      const email = params["user_google_email"] as string | undefined;
+      const defaultAcct = daemonConfig.defaultAccount || "";
+
+      if (!email) {
+        if (defaultAcct && authorizedAccounts.includes(defaultAcct)) {
+          // Inject default account
+          params["user_google_email"] = defaultAcct;
+        } else if (authorizedAccounts.length > 0) {
+          const accountList = authorizedAccounts.join(", ");
+          sendResponse(socket, {
+            id,
+            ok: false,
+            error: `Missing required parameter "user_google_email".\n\nAuthorized accounts: ${accountList}\n\nSet a default in ~/.config/coogle/config.json:\n  "defaultAccount": "${authorizedAccounts[0]}"`,
+          });
+          socket.end();
+          return;
+        }
+        // If no authorized accounts found, let the call through — workspace-mcp will handle the error
+      } else if (authorizedAccounts.length > 0 && !authorizedAccounts.includes(email)) {
+        const accountList = authorizedAccounts.join(", ");
+        sendResponse(socket, {
+          id,
+          ok: false,
+          error: `Account "${email}" is not authorized in Coogle.\n\nAuthorized accounts: ${accountList}\n\nTo authorize a new account, run this in a terminal:\n  npx @tekmidian/coogle setup\nThen follow the prompts to add the account.`,
+        });
+        socket.end();
+        return;
+      }
+    }
+  }
+
   try {
     const result = await enqueueCall(method, params);
     sendResponse(socket, { id, ok: true, result });
@@ -512,6 +610,19 @@ export async function serve(config: CoogleConfig): Promise<void> {
 
   // Ensure config directory and default config exist
   ensureConfigDir();
+
+  // Scan authorized accounts at startup
+  authorizedAccounts = loadAuthorizedAccounts();
+  if (authorizedAccounts.length > 0) {
+    process.stderr.write(
+      `[coogle] Authorized accounts: ${authorizedAccounts.join(", ")}\n`
+    );
+    if (config.defaultAccount) {
+      process.stderr.write(`[coogle] Default account: ${config.defaultAccount}\n`);
+    }
+  } else {
+    process.stderr.write("[coogle] No authorized accounts found.\n");
+  }
 
   process.stderr.write("[coogle] Starting daemon...\n");
   process.stderr.write(
