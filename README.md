@@ -1,3 +1,7 @@
+---
+links: "[[Ideaverse/AI/coogle/coogle|coogle]]"
+---
+
 # Coogle
 
 Google Workspace MCP multiplexer for Claude Code. One persistent daemon holds the single `coogle-mcp` connection. Every Claude Code session goes through it. No more credential conflicts, no more 142 tools registering simultaneously.
@@ -425,3 +429,6 @@ MIT — see [LICENSE](LICENSE)
 ## Author
 
 Matthias Nott — [github.com/mnott](https://github.com/mnott)
+
+---
+*Links:* [[Ideaverse/AI/coogle/coogle|coogle]]

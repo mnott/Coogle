@@ -1,3 +1,7 @@
+---
+links: "[[Ideaverse/AI/coogle/coogle|coogle]]"
+---
+
 # Coogle Architecture
 
 Technical reference for contributors and developers.
@@ -396,3 +400,6 @@ Rules enforced throughout `mcp-server.ts`:
 - All error returns go through the MCP error result format, not stderr logging
 
 The daemon (`daemon.ts`) is not an MCP server on stdio — it can write freely to `process.stderr` for logging. The shim talks to the daemon over the IPC socket (not stdio), so the daemon's log output does not contaminate the MCP channel.
+
+---
+*Links:* [[Ideaverse/AI/coogle/coogle|coogle]]

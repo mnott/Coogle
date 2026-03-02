@@ -24,7 +24,7 @@
  * All other methods are forwarded as coogle-mcp tool calls.
  */
 
-import { existsSync, unlinkSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, unlinkSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { createServer, Socket, Server } from "node:net";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -388,6 +388,218 @@ function enqueueCall(
 }
 
 // ---------------------------------------------------------------------------
+// Gmail HTML fallback
+// ---------------------------------------------------------------------------
+
+/** Minimum meaningful body length after stripping common footers. */
+const MIN_BODY_LENGTH = 50;
+
+/** Common mailing list / signature patterns that don't count as real content. */
+const FOOTER_PATTERNS = [
+  /^_{3,}/m,                          // _______________ separator
+  /mailing list$/im,
+  /mailman\/listinfo/i,
+  /unsubscribe/i,
+];
+
+/**
+ * Check whether a Gmail body looks empty or contains only footers/signatures.
+ */
+function isBodyEmpty(body: string): boolean {
+  if (!body || body.includes("[No readable content found]")) return true;
+
+  // Strip lines that match known footer patterns
+  let stripped = body;
+  for (const pat of FOOTER_PATTERNS) {
+    stripped = stripped.replace(pat, "");
+  }
+  stripped = stripped.replace(/https?:\/\/\S+/g, "").trim();
+
+  return stripped.length < MIN_BODY_LENGTH;
+}
+
+/**
+ * Convert HTML to readable plain text (no dependencies).
+ */
+function htmlToText(html: string): string {
+  return html
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/?(p|div|tr|li|h[1-6])[^>]*>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+interface GmailCredentials {
+  token: string;
+  refresh_token: string;
+  client_id: string;
+  client_secret: string;
+  expiry: string;
+  token_uri: string;
+}
+
+/**
+ * Load per-account OAuth credentials and refresh the token if expired.
+ */
+async function getGmailToken(email: string): Promise<string> {
+  const credPath = join(homedir(), ".google_workspace_mcp", "credentials", `${email}.json`);
+  if (!existsSync(credPath)) {
+    throw new Error(`No credentials for ${email}`);
+  }
+
+  const cred: GmailCredentials = JSON.parse(readFileSync(credPath, "utf-8"));
+
+  // Check if token is still valid (with 60s buffer)
+  const expiryMs = new Date(cred.expiry).getTime();
+  if (expiryMs > Date.now() + 60_000) {
+    return cred.token;
+  }
+
+  // Refresh
+  process.stderr.write(`[coogle] Refreshing Gmail token for ${email}...\n`);
+  const resp = await fetch(cred.token_uri || "https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: cred.client_id,
+      client_secret: cred.client_secret,
+      refresh_token: cred.refresh_token,
+      grant_type: "refresh_token",
+    }),
+  });
+
+  if (!resp.ok) {
+    throw new Error(`Token refresh failed: ${resp.status} ${resp.statusText}`);
+  }
+
+  const data = (await resp.json()) as { access_token: string; expires_in: number };
+
+  // Write updated token back
+  cred.token = data.access_token;
+  cred.expiry = new Date(Date.now() + data.expires_in * 1000).toISOString();
+  try {
+    writeFileSync(credPath, JSON.stringify(cred, null, 2), "utf-8");
+  } catch {
+    // Non-fatal — token still works for this call
+  }
+
+  return data.access_token;
+}
+
+interface GmailPart {
+  mimeType: string;
+  body?: { data?: string };
+  parts?: GmailPart[];
+}
+
+/**
+ * Recursively find the text/html MIME part in a Gmail message payload.
+ */
+function findHtmlPart(part: GmailPart): string | null {
+  if (part.mimeType === "text/html" && part.body?.data) {
+    // Gmail uses base64url encoding — Node's Buffer handles both variants
+    return Buffer.from(part.body.data, "base64url").toString("utf-8");
+  }
+  for (const child of part.parts ?? []) {
+    const found = findHtmlPart(child);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * Fetch a Gmail message directly via the Gmail API and extract readable text
+ * from the HTML part. Used as a fallback when workspace-mcp returns an empty body.
+ */
+async function fetchGmailHtmlFallback(email: string, messageId: string): Promise<string | null> {
+  try {
+    const token = await getGmailToken(email);
+    const url = `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(email)}/messages/${encodeURIComponent(messageId)}?format=full`;
+    const resp = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (!resp.ok) {
+      process.stderr.write(
+        `[coogle] Gmail API fallback failed: ${resp.status} ${resp.statusText}\n`
+      );
+      return null;
+    }
+
+    const msg = (await resp.json()) as { payload: GmailPart };
+    const html = findHtmlPart(msg.payload);
+    if (!html) return null;
+
+    const text = htmlToText(html);
+    return text.length > 0 ? text : null;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[coogle] Gmail HTML fallback error: ${msg}\n`);
+    return null;
+  }
+}
+
+/**
+ * Post-process a get_gmail_message_content result.
+ * If the body is empty/useless, re-fetch from Gmail API and extract HTML content.
+ */
+async function postProcessGmailContent(
+  method: string,
+  params: Record<string, unknown>,
+  result: unknown
+): Promise<unknown> {
+  if (method !== "get_gmail_message_content") return result;
+
+  const r = result as { content?: Array<{ type: string; text: string }> };
+  const text = r?.content?.[0]?.text;
+  if (!text) return result;
+
+  // Extract the body section
+  const bodyMarker = "--- BODY ---\n";
+  const bodyIdx = text.indexOf(bodyMarker);
+  if (bodyIdx === -1) return result;
+
+  const body = text.slice(bodyIdx + bodyMarker.length);
+  if (!isBodyEmpty(body)) return result;
+
+  // Body is empty — attempt fallback
+  const email = params["user_google_email"] as string | undefined;
+  const messageId = params["message_id"] as string | undefined;
+  if (!email || !messageId) return result;
+
+  process.stderr.write(
+    `[coogle] Empty body detected for message ${messageId}, attempting HTML fallback...\n`
+  );
+
+  const fallbackText = await fetchGmailHtmlFallback(email, messageId);
+  if (!fallbackText) {
+    process.stderr.write("[coogle] HTML fallback produced no content.\n");
+    return result;
+  }
+
+  process.stderr.write(
+    `[coogle] HTML fallback succeeded (${fallbackText.length} chars).\n`
+  );
+
+  // Build a new result with the fallback body (avoid mutating frozen SDK objects)
+  const header = text.slice(0, bodyIdx + bodyMarker.length);
+  const newText = header + fallbackText;
+  return {
+    content: [{ type: "text" as const, text: newText }],
+  };
+}
+
+// ---------------------------------------------------------------------------
 // IPC server
 // ---------------------------------------------------------------------------
 
@@ -532,7 +744,8 @@ async function handleRequest(request: IpcRequest, socket: Socket): Promise<void>
   }
 
   try {
-    const result = await enqueueCall(method, params);
+    let result = await enqueueCall(method, params);
+    result = await postProcessGmailContent(method, params, result);
     sendResponse(socket, { id, ok: true, result });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
