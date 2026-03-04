@@ -576,15 +576,16 @@ async function postProcessGmailContent(
   if (bodyIdx === -1) return result;
 
   const body = text.slice(bodyIdx + bodyMarker.length);
-  if (!isBodyEmpty(body)) return result;
+  const bodyEmpty = isBodyEmpty(body);
 
-  // Body is empty — attempt fallback
+  // Always try HTML fallback — upstream workspace-mcp strips links from HTML emails.
+  // Our htmlToText() preserves links as [text](url) markdown.
   const email = params["user_google_email"] as string | undefined;
   const messageId = params["message_id"] as string | undefined;
   if (!email || !messageId) return result;
 
   process.stderr.write(
-    `[coogle] Empty body detected for message ${messageId}, attempting HTML fallback...\n`
+    `[coogle] ${bodyEmpty ? "Empty body" : "Enriching with links"} for message ${messageId}, fetching HTML...\n`
   );
 
   const fallbackText = await fetchGmailHtmlFallback(email, messageId);
