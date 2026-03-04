@@ -425,6 +425,12 @@ function htmlToText(html: string): string {
   return html
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
     .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+    // Preserve links: <a href="URL">text</a> → [text](URL)
+    .replace(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_, url, text) => {
+      const clean = text.replace(/<[^>]+>/g, "").trim();
+      if (!clean || clean === url) return url;
+      return `[${clean}](${url})`;
+    })
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/?(p|div|tr|li|h[1-6])[^>]*>/gi, "\n")
     .replace(/<[^>]+>/g, "")
