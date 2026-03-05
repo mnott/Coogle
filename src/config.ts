@@ -51,7 +51,7 @@ const DEFAULTS: CoogleConfig = {
   socketPath: "/tmp/coogle.sock",
   mcp: {
     command: "uvx",
-    args: ["workspace-mcp", "--tool-tier", "core"],
+    args: ["workspace-mcp", "--tool-tier", "extended"],
   },
   credentials: {
     source: "claude-json",
@@ -67,7 +67,7 @@ const CONFIG_TEMPLATE = `{
   "socketPath": "/tmp/coogle.sock",
   "mcp": {
     "command": "uvx",
-    "args": ["workspace-mcp", "--tool-tier", "core"]
+    "args": ["workspace-mcp", "--tool-tier", "extended"]
   },
   "credentials": {
     "source": "claude-json",
