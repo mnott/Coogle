@@ -94,7 +94,7 @@ let knownTools: Map<string, ToolDefinition> = new Map();
 
 /**
  * Scan ~/.google_workspace_mcp/credentials/ for authorized Google accounts.
- * Each .json file is named after the email address (e.g. mnott@mnott.de.json).
+ * Each .json file is named after the email address (e.g. user@example.com.json).
  */
 function loadAuthorizedAccounts(): string[] {
   const credDir = join(homedir(), ".google_workspace_mcp", "credentials");
