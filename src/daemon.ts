@@ -564,46 +564,134 @@ async function postProcessGmailContent(
   params: Record<string, unknown>,
   result: unknown
 ): Promise<unknown> {
-  if (method !== "get_gmail_message_content") return result;
+  // Handle single-message method
+  if (method === "get_gmail_message_content") {
+    const r = result as { content?: Array<{ type: string; text: string }> };
+    const text = r?.content?.[0]?.text;
+    if (!text) return result;
 
-  const r = result as { content?: Array<{ type: string; text: string }> };
-  const text = r?.content?.[0]?.text;
-  if (!text) return result;
+    // Extract the body section
+    const bodyMarker = "--- BODY ---\n";
+    const bodyIdx = text.indexOf(bodyMarker);
+    if (bodyIdx === -1) return result;
 
-  // Extract the body section
-  const bodyMarker = "--- BODY ---\n";
-  const bodyIdx = text.indexOf(bodyMarker);
-  if (bodyIdx === -1) return result;
+    const body = text.slice(bodyIdx + bodyMarker.length);
+    const bodyEmpty = isBodyEmpty(body);
 
-  const body = text.slice(bodyIdx + bodyMarker.length);
-  const bodyEmpty = isBodyEmpty(body);
+    // Always try HTML fallback — upstream workspace-mcp strips links from HTML emails.
+    // Our htmlToText() preserves links as [text](url) markdown.
+    const email = params["user_google_email"] as string | undefined;
+    const messageId = params["message_id"] as string | undefined;
+    if (!email || !messageId) return result;
 
-  // Always try HTML fallback — upstream workspace-mcp strips links from HTML emails.
-  // Our htmlToText() preserves links as [text](url) markdown.
-  const email = params["user_google_email"] as string | undefined;
-  const messageId = params["message_id"] as string | undefined;
-  if (!email || !messageId) return result;
+    process.stderr.write(
+      `[coogle] ${bodyEmpty ? "Empty body" : "Enriching with links"} for message ${messageId}, fetching HTML...\n`
+    );
 
-  process.stderr.write(
-    `[coogle] ${bodyEmpty ? "Empty body" : "Enriching with links"} for message ${messageId}, fetching HTML...\n`
-  );
+    const fallbackText = await fetchGmailHtmlFallback(email, messageId);
+    if (!fallbackText) {
+      process.stderr.write("[coogle] HTML fallback produced no content.\n");
+      return result;
+    }
 
-  const fallbackText = await fetchGmailHtmlFallback(email, messageId);
-  if (!fallbackText) {
-    process.stderr.write("[coogle] HTML fallback produced no content.\n");
-    return result;
+    process.stderr.write(
+      `[coogle] HTML fallback succeeded (${fallbackText.length} chars).\n`
+    );
+
+    // Build a new result with the fallback body (avoid mutating frozen SDK objects)
+    const header = text.slice(0, bodyIdx + bodyMarker.length);
+    const newText = header + fallbackText;
+    return {
+      content: [{ type: "text" as const, text: newText }],
+    };
   }
 
-  process.stderr.write(
-    `[coogle] HTML fallback succeeded (${fallbackText.length} chars).\n`
-  );
+  // Handle batch method
+  if (method === "get_gmail_messages_content_batch") {
+    const r = result as { content?: Array<{ type: string; text: string }> };
+    const text = r?.content?.[0]?.text;
+    if (!text) return result;
 
-  // Build a new result with the fallback body (avoid mutating frozen SDK objects)
-  const header = text.slice(0, bodyIdx + bodyMarker.length);
-  const newText = header + fallbackText;
-  return {
-    content: [{ type: "text" as const, text: newText }],
-  };
+    const email = params["user_google_email"] as string | undefined;
+    const messageIds = params["message_ids"] as string[] | undefined;
+    if (!email || !messageIds || messageIds.length === 0) return result;
+
+    process.stderr.write(
+      `[coogle] Batch HTML fallback for ${messageIds.length} messages...\n`
+    );
+
+    // Fetch all HTML fallbacks in parallel
+    const fallbacks = await Promise.all(
+      messageIds.map(async (messageId) => {
+        try {
+          const fallbackText = await fetchGmailHtmlFallback(email, messageId);
+          return { messageId, fallbackText };
+        } catch {
+          return { messageId, fallbackText: null };
+        }
+      })
+    );
+
+    // Batch format: no "--- BODY ---" marker. Body starts after "Web Link:" line
+    // followed by a blank line. Messages separated by blank lines before next
+    // "Message ID:" header.
+    //
+    // Format:
+    //   Message ID: <id>
+    //   Subject: ...
+    //   From: ...
+    //   ...
+    //   Web Link: ...
+    //
+    //   [body text]
+    //
+    //   Message ID: <next id>
+    //   ...
+
+    let newText = text;
+    for (const fallback of fallbacks) {
+      if (!fallback.fallbackText) continue;
+
+      // Find the "Web Link:" line for this message
+      const idPattern = new RegExp(`Message ID:\\s*${fallback.messageId}`);
+      const idMatch = newText.match(idPattern);
+      if (!idMatch) {
+        process.stderr.write(
+          `[coogle] Batch: could not find Message ID ${fallback.messageId} in result text\n`
+        );
+        continue;
+      }
+
+      // Find the "Web Link:" line after this message ID, then the blank line after it
+      const searchFrom = idMatch.index!;
+      const webLinkMatch = newText.slice(searchFrom).match(/Web Link:[^\n]*\n\n/);
+      if (!webLinkMatch) {
+        process.stderr.write(
+          `[coogle] Batch: no Web Link header found after Message ID ${fallback.messageId}\n`
+        );
+        continue;
+      }
+
+      const bodyStart = searchFrom + webLinkMatch.index! + webLinkMatch[0].length;
+
+      // Body ends at the next "Message ID:" line or end of text
+      const nextMsgMatch = newText.slice(bodyStart).match(/\nMessage ID:\s/);
+      const bodyEnd = nextMsgMatch
+        ? bodyStart + nextMsgMatch.index!
+        : newText.length;
+
+      process.stderr.write(
+        `[coogle] Batch: replacing body for ${fallback.messageId} (${fallback.fallbackText.length} chars).\n`
+      );
+      newText = newText.slice(0, bodyStart) + fallback.fallbackText + newText.slice(bodyEnd);
+    }
+
+    return {
+      content: [{ type: "text" as const, text: newText }],
+    };
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
