@@ -252,6 +252,12 @@ async function spawnChild(): Promise<void> {
   const creds = loadCredentials();
   Object.assign(childEnv, creds);
 
+  // Ensure /tmp is in ALLOWED_FILE_DIRS so attachments from /tmp work on macOS
+  // (macOS resolves /tmp → /private/tmp which falls outside $HOME)
+  if (!childEnv["ALLOWED_FILE_DIRS"]) {
+    childEnv["ALLOWED_FILE_DIRS"] = `${homedir()}:/tmp:/private/tmp`;
+  }
+
   const command = resolveMcpCommand(daemonConfig.mcp.command);
   const args = daemonConfig.mcp.args;
 
