@@ -144,6 +144,17 @@ export async function runMcpServer(config: CoogleConfig): Promise<void> {
         "",
         "**Compose an email:**",
         "Always use `draft_gmail_message`. Never send directly without user review.",
+        "",
+        "**Reply to an email:**",
+        "1. Read the original message with `get_gmail_message_content` to get `thread_id`, `message_id` (Message-ID header), and `references` header.",
+        "2. Call `draft_gmail_message` with:",
+        "   - `thread_id`: the thread ID from the original message",
+        "   - `in_reply_to`: the Message-ID of the message being replied to",
+        "   - `references`: the full chain of Message-IDs (original references + the replied message's ID)",
+        "   - `subject`: \"Re: \" + original subject (if not already prefixed)",
+        "   - `to`: the original sender (for reply) or all recipients (for reply-all)",
+        "   - `body`: your reply text, optionally followed by the quoted original message",
+        "3. For quoted text, format as: `On [date], [sender] wrote:\\n> original text`",
       ].join("\n"),
     }
   );
