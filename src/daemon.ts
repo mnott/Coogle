@@ -561,6 +561,74 @@ async function fetchGmailHtmlFallback(email: string, messageId: string): Promise
   }
 }
 
+// ---------------------------------------------------------------------------
+// Calendar PATCH fallback for non-organizer reminder updates
+// ---------------------------------------------------------------------------
+
+/**
+ * Update only the reminders field on a Calendar event using PATCH.
+ *
+ * The Google Calendar API's events.patch endpoint sends only the fields
+ * included in the request body, so per-user fields like reminders can be
+ * updated without touching shared properties (which require organizer role).
+ *
+ * This is used as a fallback when workspace-mcp's manage_event (which uses
+ * PUT via events.update) fails with forbiddenForNonOrganizer.
+ */
+async function patchCalendarReminders(
+  email: string,
+  eventId: string,
+  useDefaultReminders: boolean | undefined,
+  reminders: Array<{ method: string; minutes: number }>,
+  calendarId: string = "primary"
+): Promise<unknown> {
+  const token = await getGmailToken(email); // same OAuth credentials work for Calendar
+
+  const body: Record<string, unknown> = {
+    reminders: {
+      useDefault: useDefaultReminders ?? false,
+      overrides: reminders,
+    },
+  };
+
+  const url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`;
+
+  process.stderr.write(
+    `[coogle] PATCH fallback: updating reminders for event ${eventId} (${email})\n`
+  );
+
+  const resp = await fetch(url, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`Calendar PATCH failed: ${resp.status} ${errText}`);
+  }
+
+  const updated = (await resp.json()) as Record<string, unknown>;
+  const summary = updated["summary"] || "event";
+  const link = updated["htmlLink"] || "No link";
+
+  process.stderr.write(
+    `[coogle] PATCH fallback succeeded: reminders updated for '${summary}'\n`
+  );
+
+  return {
+    content: [
+      {
+        type: "text",
+        text: `Successfully updated reminders for '${summary}' (${eventId}). Link: ${link}`,
+      },
+    ],
+  };
+}
+
 /**
  * Post-process a get_gmail_message_content result.
  * If the body is empty/useless, re-fetch from Gmail API and extract HTML content.
@@ -850,6 +918,34 @@ async function handleRequest(request: IpcRequest, socket: Socket): Promise<void>
     sendResponse(socket, { id, ok: true, result });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+
+    // Calendar PATCH fallback: when manage_event fails with forbiddenForNonOrganizer
+    // and reminders were requested, retry with a direct Calendar API PATCH that only
+    // sends the reminders field (which is per-user, not a shared property).
+    if (
+      method === "manage_event" &&
+      msg.includes("forbiddenForNonOrganizer") &&
+      params["reminders"]
+    ) {
+      try {
+        const patchResult = await patchCalendarReminders(
+          params["user_google_email"] as string,
+          params["event_id"] as string,
+          params["use_default_reminders"] as boolean | undefined,
+          params["reminders"] as Array<{ method: string; minutes: number }>,
+          (params["calendar_id"] as string) || "primary"
+        );
+        sendResponse(socket, { id, ok: true, result: patchResult });
+        socket.end();
+        return;
+      } catch (patchErr) {
+        const patchMsg = patchErr instanceof Error ? patchErr.message : String(patchErr);
+        sendResponse(socket, { id, ok: false, error: `Original: ${msg}\nPATCH fallback: ${patchMsg}` });
+        socket.end();
+        return;
+      }
+    }
+
     sendResponse(socket, { id, ok: false, error: msg });
   }
   socket.end();
