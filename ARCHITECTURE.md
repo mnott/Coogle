@@ -271,7 +271,46 @@ loadCredentials()
           └── return { GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET }
 ```
 
-The `claude-json` source reads the OAuth Client ID and Client Secret from the named MCP server's `env` block in `~/.claude.json`. Note: OAuth user tokens (obtained after completing the Google sign-in flow) are managed independently by `workspace-mcp` and stored in `~/.google_workspace_mcp/credentials/` — Coogle does not read or write those files.
+The `claude-json` source reads the OAuth Client ID and Client Secret from the named MCP server's `env` block in `~/.claude.json`.
+
+Per-account OAuth user tokens are a separate matter. They are obtained by `workspace-mcp`'s sign-in flow and stored one file per account in `~/.google_workspace_mcp/credentials/<email>.json`. Coogle both reads and writes those files: it needs the access token for its direct Gmail and Calendar API fallbacks, and it refreshes the token itself to keep the child out of its own refresh path (below). Writes go through a temp file and `rename()` so the child never sees a torn file.
+
+---
+
+## Token freshness and auth prompts
+
+`workspace-mcp` escalates to a full re-authorization whenever its own token refresh fails, and one such failure is structural for a multi-account daemon:
+
+```
+child binds one Google account per stdio session
+  │
+  ├── call for the bound account      → refresh rebinds the same user → fine
+  │
+  └── call for any other account
+        ├── loads credentials from file
+        ├── token expired → refresh succeeds
+        ├── ID token in the refresh response names the canonical account
+        │   (differs from the file name when the account was authorized
+        │    under an alias address)
+        ├── store_session() rejects the rebind  ← "already bound to a different user"
+        ├── exception swallowed → credentials discarded
+        └── start_auth_flow() → webbrowser.open() → consent page pops open
+```
+
+The refresh had succeeded; only the session bookkeeping failed. The next identical call works because the refreshed token is already on disk, so no refresh is attempted. From the outside this looks like a random transient that fixes itself on retry.
+
+Coogle addresses it in three layers, all in `daemon.ts`:
+
+| Layer | Function | Effect |
+|-------|----------|--------|
+| Refresh ahead | `preflightToken()` → `ensureFreshToken()` | Refreshes an account's token when it is within `TOKEN_REFRESH_MARGIN_MS` (10 min) of expiry, before the call is forwarded. The child loads a valid token and never refreshes. |
+| Refresh and retry | `detectAuthPrompt()` → `retryAfterAuthPrompt()` | On an authorization demand, forces a refresh and retries the call once. Safe: the child raises the demand before building a service client, so no API work is repeated. |
+| Short message | `shortAuthResult()` | Replaces the child's multi-paragraph prompt with a few lines, and logs the authorization URL instead of returning it. |
+
+Two details matter for correctness:
+
+- **Expiry parsing.** `workspace-mcp` writes `datetime.isoformat()` of a *naive UTC* datetime, so the stored value has no timezone designator. `new Date()` would read it as local time — which overstates the remaining lifetime west of UTC and understates it east of UTC. `parseExpiry()` appends `Z` when no designator is present.
+- **Browser suppression.** The child calls `webbrowser.open()` unconditionally in stdio mode with no env switch of its own. Coogle sets `BROWSER` in the child environment to a no-op binary (`/usr/bin/true`); Python's `webbrowser` honours `$BROWSER` and stops at the first entry that exits 0, so the call succeeds without launching anything. `COOGLE_AUTO_OPEN_AUTH=1` leaves `BROWSER` alone and restores the child's behaviour.
 
 ---
 
@@ -286,6 +325,7 @@ const DEFAULTS: CoogleConfig = {
   credentials: { source: "claude-json", claudeJsonPath: "~/.claude.json", mcpServerName: "coogle" },
   callTimeoutMs: 120_000,
   logLevel: "info",
+  autoOpenAuth: false,
 };
 ```
 

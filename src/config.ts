@@ -41,6 +41,13 @@ export interface CoogleConfig {
 
   /** Default Google account email (used when tool call omits user_google_email) */
   defaultAccount?: string;
+
+  /**
+   * Allow the workspace-mcp child to open a browser window when it wants
+   * authorization. Off by default — a failed tool call must not interrupt the
+   * user. The COOGLE_AUTO_OPEN_AUTH env var overrides this.
+   */
+  autoOpenAuth?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -60,6 +67,7 @@ const DEFAULTS: CoogleConfig = {
   },
   callTimeoutMs: 120_000,
   logLevel: "info",
+  autoOpenAuth: false,
 };
 
 // Template written to config.json on first `serve` run
@@ -76,7 +84,8 @@ const CONFIG_TEMPLATE = `{
   },
   "callTimeoutMs": 120000,
   "logLevel": "info",
-  "defaultAccount": ""
+  "defaultAccount": "",
+  "autoOpenAuth": false
 }
 `;
 

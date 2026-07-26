@@ -24,7 +24,14 @@
  * All other methods are forwarded as coogle-mcp tool calls.
  */
 
-import { existsSync, unlinkSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
+import {
+  existsSync,
+  unlinkSync,
+  readFileSync,
+  writeFileSync,
+  renameSync,
+  readdirSync,
+} from "node:fs";
 import { createServer, Socket, Server } from "node:net";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -103,6 +110,9 @@ function loadAuthorizedAccounts(): string[] {
     return files
       .filter((f) => f.endsWith(".json"))
       .map((f) => basename(f, ".json"))
+      // The directory also holds bookkeeping files such as oauth_states.json,
+      // which are not accounts. Credential files are named after the address.
+      .filter((name) => name.includes("@"))
       .sort();
   } catch {
     return [];
@@ -205,6 +215,24 @@ function loadCredentialsFromClaudeJson(): Record<string, string> {
 // coogle-mcp child management
 // ---------------------------------------------------------------------------
 
+/** No-op executables used to neutralize the child's browser auto-open. */
+const NOOP_BROWSERS = ["/usr/bin/true", "/bin/true"];
+
+/**
+ * Whether the child may open a browser window when it wants authorization.
+ *
+ * Off by default: the child opens one as a side effect of a failed tool call,
+ * which interrupts whatever the user is doing. Authorize deliberately instead,
+ * with `coogle setup`.
+ */
+function autoOpenAuthEnabled(): boolean {
+  const env = process.env["COOGLE_AUTO_OPEN_AUTH"];
+  if (env !== undefined && env !== "") {
+    return env === "1" || env.toLowerCase() === "true";
+  }
+  return daemonConfig.autoOpenAuth === true;
+}
+
 /**
  * Resolve the MCP command to an absolute path if possible.
  * If it's a bare command name (no path separator), look it up via PATH.
@@ -256,6 +284,22 @@ async function spawnChild(): Promise<void> {
   // (macOS resolves /tmp → /private/tmp which falls outside $HOME)
   if (!childEnv["ALLOWED_FILE_DIRS"]) {
     childEnv["ALLOWED_FILE_DIRS"] = `${homedir()}:/tmp:/private/tmp`;
+  }
+
+  // Never let a failed tool call open a browser window behind the user's back.
+  // workspace-mcp calls webbrowser.open() as a side effect of an auth prompt;
+  // Python's webbrowser honours $BROWSER and stops at the first entry that exits
+  // 0, so a no-op binary makes that call do nothing.
+  if (autoOpenAuthEnabled()) {
+    process.stderr.write(
+      "[coogle] Browser auto-open ENABLED (COOGLE_AUTO_OPEN_AUTH).\n"
+    );
+  } else {
+    childEnv["BROWSER"] = NOOP_BROWSERS.find((p) => existsSync(p)) ?? "true";
+    process.stderr.write(
+      `[coogle] Browser auto-open disabled (BROWSER=${childEnv["BROWSER"]}). ` +
+        "Set COOGLE_AUTO_OPEN_AUTH=1 to allow it.\n"
+    );
   }
 
   const command = resolveMcpCommand(daemonConfig.mcp.command);
@@ -460,52 +504,222 @@ interface GmailCredentials {
   token_uri: string;
 }
 
+// ---------------------------------------------------------------------------
+// Token freshness
+//
+// workspace-mcp escalates to a full re-authorization whenever *its own* token
+// refresh fails, and one of those failures is structural for coogle: the child
+// binds a single Google account to its one stdio session, so refreshing an
+// account authorized under an alias address (the credential file is named after
+// the alias, Google's ID token names the canonical account) is rejected as a
+// session rebind. The refresh itself succeeded; the child still discards the
+// credentials and demands re-auth.
+//
+// Fix: keep the on-disk access token comfortably valid so the child loads a
+// valid token and never enters its refresh path at all.
+// ---------------------------------------------------------------------------
+
+/** Refresh an access token once it is within this window of expiring. */
+const TOKEN_REFRESH_MARGIN_MS = 10 * 60_000;
+
+type RefreshFailure = "invalid_grant" | "no_credentials" | "network" | "other";
+
+class TokenRefreshError extends Error {
+  constructor(message: string, readonly reason: RefreshFailure) {
+    super(message);
+    this.name = "TokenRefreshError";
+  }
+}
+
+/** Path of the credential file the workspace-mcp child reads for an account. */
+function credentialPath(email: string): string {
+  return join(homedir(), ".google_workspace_mcp", "credentials", `${email}.json`);
+}
+
 /**
- * Load per-account OAuth credentials and refresh the token if expired.
+ * Parse a credential-file expiry timestamp into epoch millis.
+ *
+ * workspace-mcp writes `datetime.isoformat()` of a naive UTC datetime, so the
+ * value carries no timezone designator. `new Date()` reads such a string as
+ * local time, which overstates the remaining lifetime by the UTC offset — and
+ * an overstated lifetime is exactly what lets the child refresh instead of us.
  */
-async function getGmailToken(email: string): Promise<string> {
-  const credPath = join(homedir(), ".google_workspace_mcp", "credentials", `${email}.json`);
+function parseExpiry(expiry: string | null | undefined): number {
+  if (!expiry) return 0;
+  const trimmed = expiry.trim();
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(trimmed);
+  const ms = Date.parse(hasZone ? trimmed : `${trimmed}Z`);
+  return Number.isNaN(ms) ? 0 : ms;
+}
+
+/**
+ * Write a credential file atomically.
+ *
+ * Both coogle and the child write these files. A torn write would surface in
+ * the child as a parse error — and a parse error escalates to re-auth.
+ */
+function writeCredentialFile(credPath: string, cred: GmailCredentials): void {
+  const tmp = `${credPath}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(cred, null, 2), "utf-8");
+  renameSync(tmp, credPath);
+}
+
+/** Accounts whose alias mismatch has already been reported. */
+const reportedAliases = new Set<string>();
+
+/**
+ * Read the `email` claim out of an ID token without verifying its signature.
+ * Informational only — used to explain alias/canonical account mismatches.
+ */
+function idTokenEmail(idToken: string | undefined): string | null {
+  if (!idToken) return null;
+  try {
+    const payload = idToken.split(".")[1];
+    if (!payload) return null;
+    const claims = JSON.parse(
+      Buffer.from(payload, "base64url").toString("utf-8")
+    ) as { email?: string };
+    return claims.email ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Log once per account when its credential file is named after an alias of the
+ * underlying Google account. This is the trigger for the child's session-rebind
+ * rejection, so it is worth naming explicitly in the log.
+ */
+function noteAliasMismatch(email: string, idToken: string | undefined): void {
+  const canonical = idTokenEmail(idToken);
+  if (!canonical || canonical.toLowerCase() === email.toLowerCase()) return;
+  if (reportedAliases.has(email)) return;
+  reportedAliases.add(email);
+  process.stderr.write(
+    `[coogle] NOTE: "${email}" is an alias of the Google account "${canonical}".\n` +
+      "[coogle]       workspace-mcp rejects the session rebind when it refreshes an\n" +
+      "[coogle]       alias token, so coogle refreshes these tokens itself instead.\n"
+  );
+}
+
+/**
+ * Ensure the on-disk access token for an account is valid, refreshing it when it
+ * is within TOKEN_REFRESH_MARGIN_MS of expiry. Returns a usable access token.
+ *
+ * @param force Refresh even when the stored token still looks valid.
+ */
+async function ensureFreshToken(email: string, force = false): Promise<string> {
+  const credPath = credentialPath(email);
   if (!existsSync(credPath)) {
-    throw new Error(`No credentials for ${email}`);
+    throw new TokenRefreshError(`No credentials for ${email}`, "no_credentials");
   }
 
-  const cred: GmailCredentials = JSON.parse(readFileSync(credPath, "utf-8"));
+  let cred: GmailCredentials;
+  try {
+    cred = JSON.parse(readFileSync(credPath, "utf-8")) as GmailCredentials;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new TokenRefreshError(
+      `Credential file for ${email} is unreadable: ${msg}`,
+      "other"
+    );
+  }
 
-  // Check if token is still valid (with 60s buffer)
-  const expiryMs = new Date(cred.expiry).getTime();
-  if (expiryMs > Date.now() + 60_000) {
+  if (!force && parseExpiry(cred.expiry) > Date.now() + TOKEN_REFRESH_MARGIN_MS) {
     return cred.token;
   }
 
-  // Refresh
-  process.stderr.write(`[coogle] Refreshing Gmail token for ${email}...\n`);
-  const resp = await fetch(cred.token_uri || "https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: cred.client_id,
-      client_secret: cred.client_secret,
-      refresh_token: cred.refresh_token,
-      grant_type: "refresh_token",
-    }),
-  });
+  if (!cred.refresh_token) {
+    throw new TokenRefreshError(
+      `No refresh token stored for ${email} — re-authorization required.`,
+      "invalid_grant"
+    );
+  }
+
+  process.stderr.write(`[coogle] Refreshing access token for ${email}...\n`);
+
+  let resp: Response;
+  try {
+    resp = await fetch(cred.token_uri || "https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: cred.client_id,
+        client_secret: cred.client_secret,
+        refresh_token: cred.refresh_token,
+        grant_type: "refresh_token",
+      }),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new TokenRefreshError(
+      `Token refresh for ${email} could not reach Google: ${msg}`,
+      "network"
+    );
+  }
 
   if (!resp.ok) {
-    throw new Error(`Token refresh failed: ${resp.status} ${resp.statusText}`);
+    const body = await resp.text().catch(() => "");
+    const reason: RefreshFailure = body.includes("invalid_grant")
+      ? "invalid_grant"
+      : "other";
+    throw new TokenRefreshError(
+      `Token refresh for ${email} failed: ${resp.status} ${resp.statusText}` +
+        (body ? ` — ${body.slice(0, 200)}` : ""),
+      reason
+    );
   }
 
-  const data = (await resp.json()) as { access_token: string; expires_in: number };
+  const data = (await resp.json()) as {
+    access_token: string;
+    expires_in: number;
+    refresh_token?: string;
+    id_token?: string;
+  };
 
-  // Write updated token back
   cred.token = data.access_token;
   cred.expiry = new Date(Date.now() + data.expires_in * 1000).toISOString();
+  // Google rotates refresh tokens for some clients — keep the newest one.
+  if (data.refresh_token) cred.refresh_token = data.refresh_token;
+
   try {
-    writeFileSync(credPath, JSON.stringify(cred, null, 2), "utf-8");
-  } catch {
-    // Non-fatal — token still works for this call
+    writeCredentialFile(credPath, cred);
+  } catch (err) {
+    // Non-fatal — the token still works for this call, the child just won't see it.
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[coogle] Could not persist refreshed token for ${email}: ${msg}\n`);
   }
 
+  noteAliasMismatch(email, data.id_token);
+
   return data.access_token;
+}
+
+/**
+ * Refresh an account's token ahead of a tool call.
+ *
+ * Never blocks the call: a failure is returned so it can explain a later auth
+ * prompt, but the call is still forwarded — the child may hold a usable token
+ * of its own.
+ */
+async function preflightToken(email: string): Promise<TokenRefreshError | null> {
+  try {
+    await ensureFreshToken(email);
+    return null;
+  } catch (err) {
+    const failure =
+      err instanceof TokenRefreshError
+        ? err
+        : new TokenRefreshError(
+            err instanceof Error ? err.message : String(err),
+            "other"
+          );
+    // An unknown account is normal (validation upstream of here reports it).
+    if (failure.reason !== "no_credentials") {
+      process.stderr.write(`[coogle] Pre-flight refresh: ${failure.message}\n`);
+    }
+    return failure;
+  }
 }
 
 interface GmailPart {
@@ -535,7 +749,7 @@ function findHtmlPart(part: GmailPart): string | null {
  */
 async function fetchGmailHtmlFallback(email: string, messageId: string): Promise<string | null> {
   try {
-    const token = await getGmailToken(email);
+    const token = await ensureFreshToken(email);
     const url = `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(email)}/messages/${encodeURIComponent(messageId)}?format=full`;
     const resp = await fetch(url, {
       headers: { Authorization: `Bearer ${token}` },
@@ -582,7 +796,7 @@ async function patchCalendarReminders(
   reminders: Array<{ method: string; minutes: number }>,
   calendarId: string = "primary"
 ): Promise<unknown> {
-  const token = await getGmailToken(email); // same OAuth credentials work for Calendar
+  const token = await ensureFreshToken(email); // same OAuth credentials work for Calendar
 
   const body: Record<string, unknown> = {
     reminders: {
@@ -769,6 +983,153 @@ async function postProcessGmailContent(
 }
 
 // ---------------------------------------------------------------------------
+// Auth-prompt interception
+// ---------------------------------------------------------------------------
+
+/** Signatures of workspace-mcp's "the user must authorize" responses. */
+const AUTH_PROMPT_PATTERNS = [
+  /ACTION REQUIRED: Google Authentication Needed/i,
+  /Authentication Required: Token Expired/i,
+];
+
+interface ToolTextResult {
+  content?: Array<{ type?: string; text?: string }>;
+  isError?: boolean;
+}
+
+/** Concatenate the text parts of a tool result. */
+function resultText(result: unknown): string {
+  const r = result as ToolTextResult | null;
+  if (!r || typeof r !== "object" || !Array.isArray(r.content)) return "";
+  return r.content
+    .map((part) => (typeof part?.text === "string" ? part.text : ""))
+    .join("\n");
+}
+
+/**
+ * Return the prompt text when a result or error is an authorization demand
+ * rather than a real failure.
+ */
+function detectAuthPrompt(result: unknown, errMsg?: string): string | null {
+  for (const text of [errMsg ?? "", resultText(result)]) {
+    if (text && AUTH_PROMPT_PATTERNS.some((p) => p.test(text))) return text;
+  }
+  return null;
+}
+
+/** Pull the authorization URL out of an upstream auth prompt. */
+function extractAuthUrl(prompt: string): string | null {
+  const match = prompt.match(/https:\/\/accounts\.google\.com\/o\/oauth2\/\S+/);
+  return match ? match[0] : null;
+}
+
+/**
+ * Build a short authorization message.
+ *
+ * workspace-mcp's prompt runs to several paragraphs and inlines all ~40 OAuth
+ * scopes in the URL; this keeps the account, the reason, and the one action.
+ */
+function shortAuthResult(
+  email: string,
+  prompt: string,
+  refreshError: TokenRefreshError | null
+): ToolTextResult {
+  const lines = [`${AUTH_MESSAGE_PREFIX}${email}.`];
+
+  if (refreshError?.reason === "invalid_grant") {
+    lines.push(
+      "The stored refresh token was rejected by Google — it has expired or been revoked.",
+      'If this account\'s OAuth consent screen is still in "testing" mode, Google expires',
+      "refresh tokens after 7 days; publishing the consent screen to production stops it."
+    );
+  } else if (refreshError) {
+    lines.push(`Coogle could not refresh the token: ${refreshError.message}`);
+  } else {
+    lines.push(
+      "Coogle refreshed the token and retried once; the account is still unauthorized."
+    );
+  }
+
+  // The authorization URL carries every requested scope and runs to kilobytes.
+  // It goes to the log, where a human can find it, rather than into the reply.
+  const url = extractAuthUrl(prompt);
+  if (url) {
+    process.stderr.write(`[coogle] Authorization URL for ${email}:\n${url}\n`);
+    lines.push(
+      "",
+      "No browser was opened. To authorize, either:",
+      "  - copy the authorization URL from the coogle daemon log, or",
+      "  - set COOGLE_AUTO_OPEN_AUTH=1 and repeat the call to open it in a browser."
+    );
+  } else {
+    lines.push("", "No browser was opened and no authorization URL was offered.");
+  }
+
+  return {
+    content: [{ type: "text", text: lines.join("\n") }],
+    isError: true,
+  };
+}
+
+/** First line of coogle's own short authorization message. */
+const AUTH_MESSAGE_PREFIX = "Google authorization needed for ";
+
+/** Whether a result is the short authorization message built below. */
+function isAuthMessage(result: unknown): boolean {
+  return resultText(result).startsWith(AUTH_MESSAGE_PREFIX);
+}
+
+/**
+ * Recover from an authorization demand: force a token refresh, retry the call
+ * once, and fall back to a short message if it still fails.
+ *
+ * Retrying is safe because the child raises this before it builds a Google
+ * service client, so the original call performed no API work.
+ */
+async function retryAfterAuthPrompt(
+  method: string,
+  params: Record<string, unknown>,
+  email: string,
+  prompt: string,
+  refreshError: TokenRefreshError | null
+): Promise<unknown> {
+  process.stderr.write(
+    `[coogle] ${method} demanded authorization for ${email} — refreshing token and retrying once.\n`
+  );
+
+  let failure = refreshError;
+  let stillPrompting = prompt;
+
+  try {
+    await ensureFreshToken(email, true);
+    const retry = await enqueueCall(method, params);
+    const retryPrompt = detectAuthPrompt(retry);
+    if (!retryPrompt) {
+      process.stderr.write(
+        `[coogle] Retry after refresh succeeded — auth prompt suppressed for ${email}.\n`
+      );
+      return retry;
+    }
+    stillPrompting = retryPrompt;
+  } catch (err) {
+    if (err instanceof TokenRefreshError) {
+      failure = err;
+    } else {
+      const msg = err instanceof Error ? err.message : String(err);
+      const retryPrompt = detectAuthPrompt(undefined, msg);
+      // A different failure on retry is the real problem — surface it as-is.
+      if (!retryPrompt) throw err;
+      stillPrompting = retryPrompt;
+    }
+  }
+
+  process.stderr.write(
+    `[coogle] Authorization still required for ${email} after refresh.\n`
+  );
+  return shortAuthResult(email, stillPrompting, failure);
+}
+
+// ---------------------------------------------------------------------------
 // IPC server
 // ---------------------------------------------------------------------------
 
@@ -912,12 +1273,50 @@ async function handleRequest(request: IpcRequest, socket: Socket): Promise<void>
     }
   }
 
+  // Keep the child's own token refresh out of the picture: an expired token on
+  // disk is what makes it escalate to a browser-popping re-auth prompt.
+  const callEmail = params["user_google_email"] as string | undefined;
+  const refreshError = callEmail ? await preflightToken(callEmail) : null;
+
   try {
     let result = await enqueueCall(method, params);
-    result = await postProcessGmailContent(method, params, result);
+
+    // The child returns an auth demand as a tool result, not a transport error.
+    const prompt = detectAuthPrompt(result);
+    if (prompt && callEmail) {
+      result = await retryAfterAuthPrompt(method, params, callEmail, prompt, refreshError);
+    }
+
+    // Gmail post-processing needs a real message body; skip it when the reply is
+    // an authorization message, or it would fire pointless Gmail API calls.
+    if (!detectAuthPrompt(result) && !isAuthMessage(result)) {
+      result = await postProcessGmailContent(method, params, result);
+    }
     sendResponse(socket, { id, ok: true, result });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+
+    // Some versions surface the auth demand as an error instead of a result.
+    const prompt = detectAuthPrompt(undefined, msg);
+    if (prompt && callEmail) {
+      try {
+        const recovered = await retryAfterAuthPrompt(
+          method,
+          params,
+          callEmail,
+          prompt,
+          refreshError
+        );
+        sendResponse(socket, { id, ok: true, result: recovered });
+        socket.end();
+        return;
+      } catch (retryErr) {
+        const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+        sendResponse(socket, { id, ok: false, error: retryMsg });
+        socket.end();
+        return;
+      }
+    }
 
     // Calendar PATCH fallback: when manage_event fails with forbiddenForNonOrganizer
     // and reminders were requested, retry with a direct Calendar API PATCH that only

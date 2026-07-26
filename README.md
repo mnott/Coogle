@@ -171,6 +171,17 @@ Config lives at `~/.config/coogle/config.json`. It is created automatically by `
 | `credentials.mcpServerName` | `coogle` | MCP server key to read credentials from |
 | `callTimeoutMs` | `120000` | Per-call timeout in milliseconds |
 | `logLevel` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
+| `defaultAccount` | _(unset)_ | Google account used when a call omits `user_google_email` |
+| `autoOpenAuth` | `false` | Allow the child to open a browser window when it wants authorization |
+
+### Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `COOGLE_AUTO_OPEN_AUTH` | unset (off) | Set to `1` to let the `workspace-mcp` child open a browser window on an authorization prompt. Overrides `autoOpenAuth`. |
+
+The daemon normally runs under launchd, so set this in `com.pai.coogle.plist`
+(`EnvironmentVariables`) rather than in your shell, then restart the daemon.
 
 ---
 
@@ -224,6 +235,16 @@ Or call any tool with the new email — `workspace-mcp` will return an authoriza
 
 4. **Open the authorization URL** in a browser, sign in as the target account, and approve the permissions. The callback goes to `localhost:8000` (the OAuth server built into `workspace-mcp`).
 
+   Coogle does not open the browser for you — a tool call must never pop a window
+   while you are working. Take the URL from the daemon log:
+
+   ```bash
+   grep -A1 "Authorization URL for" /tmp/coogle.log | tail -2
+   ```
+
+   To have the browser open automatically instead, set `COOGLE_AUTO_OPEN_AUTH=1`
+   for the daemon (see [Environment variables](#environment-variables)).
+
 5. **Done.** A token file is saved to `~/.google_workspace_mcp/credentials/newuser@example.com.json`. All subsequent tool calls with that email work immediately.
 
 ### Google Workspace family/team domains
@@ -233,7 +254,9 @@ If all accounts are on the same Google Workspace domain (e.g. `@example.com`) an
 ### Important notes
 
 - **Calendar sharing vs. Contacts:** Google Calendar supports delegation — you can access shared calendars with just one account's token. Google Contacts has no sharing model. Each account must be individually authorized to manage its contacts.
-- **Token refresh:** Tokens are long-lived (refresh tokens). They only expire if the user revokes access or the OAuth app credentials change.
+- **Token refresh:** Coogle refreshes each account's access token itself, 10 minutes before it expires, and writes it to the file the child reads. This is deliberate — see [Authorization prompts](#authorization-prompts-and-token-refresh) below.
+- **Refresh token lifetime:** Refresh tokens are long-lived only once the OAuth consent screen is **published to production**. While the consent screen is in `Testing` mode, Google expires every refresh token after 7 days, and each account then needs a fresh authorization. If accounts keep needing re-authorization about weekly, publish the consent screen in Google Cloud Console → APIs & Services → OAuth consent screen.
+- **Alias addresses:** If an account is authorized under an alias (say `gina@example.de` for the account `gina@example.org`), the credential file is named after the alias while Google's ID token names the canonical account. `workspace-mcp` binds one account per stdio session and rejects the mismatch as a session rebind. Coogle logs a `NOTE:` line when it detects this; no action is needed, because keeping the token fresh avoids the child's refresh path entirely.
 - **Port 8000:** The `workspace-mcp` OAuth callback server listens on `localhost:8000`. If this port is occupied when you trigger an auth flow, restart the daemon first.
 
 ---
@@ -358,6 +381,44 @@ node dist/index.js restart
 `workspace-mcp` will prompt for a new OAuth flow on the next call.
 
 Note: re-running `node dist/index.js setup` will **not** fix expired tokens. The setup wizard only handles the OAuth Client ID and Client Secret (app credentials). Token lifecycle is managed entirely by `workspace-mcp`.
+
+### Authorization prompts and token refresh
+
+**"ACTION REQUIRED: Google Authentication Needed" — but nothing was revoked**
+
+Symptom: the first call for an account after an idle period fails with an
+authorization demand, a Google consent page opens by itself, and repeating the
+identical call immediately succeeds without doing anything.
+
+Cause: `workspace-mcp` escalates to a full re-authorization whenever *its own*
+token refresh fails, and one such failure is structural for a multi-account
+daemon. The child binds a single Google account to its one stdio session. When
+it refreshes an account whose credential file is named after an alias, the ID
+token in the refresh response names the canonical account, the child treats that
+as a session rebind and rejects it — discarding credentials it had just
+refreshed successfully. It then opens a browser as a side effect of the failed
+tool call. The retry works because the refreshed token is already on disk, so no
+refresh is attempted the second time.
+
+Coogle handles this in three layers:
+
+1. **Refresh ahead.** Before forwarding a call, coogle refreshes that account's
+   access token if it expires within 10 minutes, writing it to the file the child
+   reads. The child then loads a valid token and never enters its refresh path.
+2. **Refresh and retry.** If an authorization demand still comes back, coogle
+   forces a refresh and retries the call once. The child raises the demand before
+   it builds any Google service client, so no API work is repeated. A successful
+   retry is invisible to the caller.
+3. **Short message.** If authorization is genuinely required, coogle replaces the
+   child's multi-paragraph prompt (which inlines all ~40 OAuth scopes) with a few
+   lines naming the account and the reason, and writes the authorization URL to
+   the daemon log.
+
+No browser is opened at any point unless `COOGLE_AUTO_OPEN_AUTH=1` is set.
+
+Note: the child's own log line `Opened auth URL in browser automatically` is
+inaccurate when auto-open is disabled. Coogle points the child's `$BROWSER` at a
+no-op binary, so the call succeeds without launching anything.
 
 **Daemon keeps crashing**
 
