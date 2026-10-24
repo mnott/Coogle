@@ -32,13 +32,16 @@ Tell Claude Code:
 
 Claude clones the repo, finds the setup skill, and handles everything autonomously — prerequisites, build, config, daemon install, and Google OAuth. You just approve the permissions in your browser when prompted.
 
-### Alternative: npx
+### Alternative: install from GitHub Releases
 
 If you prefer a traditional install without cloning:
 
 ```bash
-npx -y @tekmidian/coogle setup
+npm i -g https://github.com/mnott/Coogle/releases/latest/download/coogle.tgz
+coogle setup
 ```
+
+Update: `pai update --package @tekmidian/coogle`. The npm registry is no longer updated; releases come from GitHub.
 
 The wizard handles everything: environment check, credentials, config, daemon install, launchd service, and Claude config patching.
 
